@@ -1,0 +1,7 @@
+node_modules/
+dist/
+test-results/
+playwright-report/
+# OCR 執行檔由 npm install 自動複製（scripts/copy-ocr-assets.mjs）
+public/ocr/
+public/pdfjs/

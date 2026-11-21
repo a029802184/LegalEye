@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="t d">
+  <title id="t">LegalEye 法眼圖標</title>
+  <desc id="d">以眼睛輪廓包覆天平，象徵仔細核對和法律專業</desc>
+  <path d="M13 64C29 41 46 31 64 31s35 10 51 33c-16 23-33 33-51 33S29 87 13 64Z" fill="none" stroke="#243E59" stroke-width="8" stroke-linejoin="round"/>
+  <circle cx="64" cy="64" r="23" fill="#32648C"/>
+  <g stroke="#FFFFFF" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <path d="M64 48v32M48 56h32" stroke-width="3.8"/>
+    <path d="M53 56l-6 11h12l-6-11Zm22 0-6 11h12l-6-11Z" fill="#FFFFFF" stroke="#FFFFFF" stroke-width="1.5"/>
+    <path d="M55 81h18" stroke-width="4.2"/>
+  </g>
+</svg>
