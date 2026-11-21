@@ -1,4 +1,4 @@
-import type { DocRole, ExtractedDoc, FlowId, FlowResult } from '../core/types';
+import type { DocRole, ExtractedDoc, FieldCorrection, FlowId, FlowResult, ManualPair } from '../core/types';
 import { runFlowA } from './flowA';
 import { runFlowB, type ServiceManualInput } from './flowB';
 import { runFlowC } from './flowC';
@@ -28,8 +28,8 @@ export const FLOWS: FlowDef[] = [
     title: '強制執行聲請狀核對',
     short: '強執聲請狀',
     desc: '聲請狀對照支付命令、確定證明書、送達證書與債權資料，含金額驗算與利息起算日計算。',
-    roles: ['enforcement-petition', 'payment-order', 'finality-cert', 'service-proof', 'merged-source', 'debt-statement', 'attachment'],
-    expects: ['Word 民事強制執行聲請狀', '支付命令正本／確定證明書／送達證書（可為合併 PDF）', '債權或已清償明細（如有）'],
+    roles: ['enforcement-petition', 'payment-order', 'finality-cert', 'service-proof', 'merged-source', 'debt-statement', 'tax-record', 'attachment'],
+    expects: ['強制執行聲請狀（用來確認書狀的當事人與金額）', '支付命令正本／確定證明書（用來確認執行名義，可合併為 PDF）', '送達資料（送達翌日起息時使用）', '清償明細、查稅／財產所得資料（如有）'],
   },
   {
     id: 'C',
@@ -52,11 +52,12 @@ export const FLOWS: FlowDef[] = [
 export interface RunOptions {
   settings: Settings;
   service?: Record<string, ServiceManualInput>;
-  manualPairs?: Record<string, { person?: string; statement?: string }>;
+  manualPairs?: Record<string, ManualPair>;
+  corrections?: Record<string, FieldCorrection>;
 }
 
 export function runFlow(flow: FlowId, docs: ExtractedDoc[], opt: RunOptions): FlowResult {
-  const ctx = { settings: opt.settings, service: opt.service, manualPairs: opt.manualPairs };
+  const ctx = { settings: opt.settings, service: opt.service, manualPairs: opt.manualPairs, corrections: opt.corrections };
   switch (flow) {
     case 'A':
       return runFlowA(docs, ctx);

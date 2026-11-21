@@ -3,7 +3,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { loadSettings, saveSettings, type Settings } from '../core/rules';
-import type { ExtractedDoc, FlowId, FlowResult } from '../core/types';
+import type { ExtractedDoc, FieldCorrection, FlowId, FlowResult, ManualPair } from '../core/types';
 import type { SkippedEntry } from '../core/zip';
 import { DEFAULT_STATUSES, type Patent, type StatusDef } from '../patent/model';
 import type { ServiceManualInput } from '../flows/flowB';
@@ -17,7 +17,8 @@ export interface CheckSession {
   errors: string[];
   result?: FlowResult;
   service: Record<string, ServiceManualInput>;
-  manualPairs: Record<string, { person?: string; statement?: string }>;
+  manualPairs: Record<string, ManualPair>;
+  corrections?: Record<string, FieldCorrection>;
 }
 
 interface Toast {

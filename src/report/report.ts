@@ -26,8 +26,9 @@ export const DISCLAIMER =
   '本報告由「法眼 LegalEye」依規則式比對產生，僅供法務人員審查輔助。系統結果不代表文件已符合法律規定，亦不構成法律意見；「一致」僅表示依目前規則在所列來源中找到相同記載。實際內容、送達效力、利息計算與附件齊備與否，仍應由承辦人員依原始文件確認。';
 
 export function maskText(s: string): string {
-  return String(s ?? '')
-    .replace(/[A-Z][1289][\d*]{8}/g, (m) => maskId(m))
+  return String(s ?? '').normalize('NFKC')
+    .replace(/[A-Z][ \t]*[1289](?:[ \t]*[\d*X○●O]){8}/gi, (m) => maskId(m.replace(/[ \t]/g, '').toUpperCase()))
+    .replace(/((?:帳[號戶]|銀行帳號)\s*[:：]?\s*)(\d(?:[ -]?\d){7,21})(?!\d)/g, (_, prefix: string, number: string) => `${prefix}${maskAccount(number.replace(/[ -]/g, ''))}`)
     .replace(/(?<!\d)09\d{2}-?\d{3}-?(\d{3})(?!\d)/g, (_m, last: string) => `09**-***-${last}`)
     .replace(/(?<![\d,])\d{10,20}(?![\d,])/g, (m) => maskAccount(m));
 }
@@ -54,7 +55,8 @@ export function buildHtmlReport(res: FlowResult, docs: ExtractedDoc[], opt: Repo
   const cell = (i: CheckItem, side: 'a' | 'b') => {
     const e = i[side];
     if (!e) return '<span class="mut">—</span>';
-    return `<div><b>${escapeHtml(e.label)}</b>：${m(e.normalized)}</div><div class="mut">原文：${m(e.raw)}</div>${e.prov ? `<div class="mut">來源：${m(provLabel(e.prov))}</div>` : ''}`;
+    const correction = e.correction?.applied;
+    return `<div><b>${escapeHtml(e.label)}</b>：${m(e.normalized)}</div><div class="mut">原文：${m(e.raw)}</div>${correction ? `<div>電腦讀取：${m(e.correction!.original) || '未讀到'}</div><div>已由人工確認：${m(correction.value)}${correction.by ? `（${m(correction.by)}）` : ''} · ${m(correction.at)}</div>` : ''}${e.prov ? `<div class="mut">來源：${m(provLabel(e.prov))}</div>` : ''}`;
   };
   const units = res.units
     .map((u, ui) => {
@@ -93,10 +95,10 @@ pre{white-space:pre-wrap;background:#f5f7fa;padding:6px;margin:6px 0;font-family
 <tr><td>文字辨識成功率</td><td>${st.ok}/${st.total} 頁（${st.rate}%）；OCR ${st.ocr} 頁；無法辨識 ${st.failed} 頁</td></tr>
 <tr><td>核對單位</td><td>共 ${res.units.length}：${Object.entries(counts).map(([k, v]) => `${UNIT_STATUS_LABEL[k as keyof typeof UNIT_STATUS_LABEL]} ${v}`).join('、') || '—'}</td></tr>
 <tr><td>人工覆核進度</td><td>${reviewed}/${totalItems} 項已標記</td></tr>
-${opt.reviewer ? `<tr><td>覆核人員</td><td>${escapeHtml(opt.reviewer)}</td></tr>` : ''}
+${opt.reviewer ? `<tr><td>覆核人員</td><td>${m(opt.reviewer)}</td></tr>` : ''}
 </tbody></table>
 <h2>文件清單與雜湊摘要（SHA-256）</h2><table><thead><tr><th style="width:30%">檔案（ZIP 內路徑）</th><th style="width:14%">角色</th><th style="width:10%">頁數／大小</th><th style="width:16%">讀取狀態</th><th>SHA-256</th></tr></thead><tbody>
-${docs.map((d) => `<tr><td>${m(d.file.path)}</td><td>${ROLE_LABEL[d.role]}${d.roleManual ? '（人工指定）' : ''}</td><td>${d.pages.length} 頁／${Math.ceil(d.file.size / 1024)} KB</td><td>${escapeHtml(d.status)}${d.warnings.length ? `<div class="mut">${d.warnings.map(escapeHtml).join('<br>')}</div>` : ''}</td><td style="font-family:monospace;font-size:11px">${d.file.sha256}</td></tr>`).join('')}
+${docs.map((d) => `<tr><td>${m(d.file.path)}</td><td>${ROLE_LABEL[d.role]}${d.roleManual ? '（人工指定）' : ''}</td><td>${d.pages.length} 頁／${Math.ceil(d.file.size / 1024)} KB</td><td>${escapeHtml(d.status)}${d.warnings.length ? `<div class="mut">${d.warnings.map(m).join('<br>')}</div>` : ''}</td><td style="font-family:monospace;font-size:11px">${d.file.sha256}</td></tr>`).join('')}
 </tbody></table>
 ${res.batchIssues.length ? `<h2>批次問題與待人工處理</h2><ul>${res.batchIssues.map((i) => `<li>[${i.level === 'error' ? '錯誤' : i.level === 'warning' ? '警示' : '資訊'}] ${m(i.message)}</li>`).join('')}</ul>` : ''}
 <h2>逐項核對結果</h2>${units || '<p>沒有可核對的單位。</p>'}
@@ -107,11 +109,11 @@ ${res.batchIssues.length ? `<h2>批次問題與待人工處理</h2><ul>${res.bat
 
 export function buildCsvReport(res: FlowResult, opt: ReportOptions): string {
   const mm = (s: string) => (opt.mask ? maskText(s) : s);
-  const rows: unknown[][] = [['批次', '核對單位', '單位狀態', '欄位', '狀態', '優先', '來源A', '來源A位置', '書狀B', '書狀B位置', '原因', '計算', '人工覆核', '備註', '規則版本']];
+  const rows: unknown[][] = [['批次', '核對單位', '單位狀態', '欄位', '狀態', '優先', '來源A', '來源A位置', '書狀B', '書狀B位置', '原因', '計算', '人工覆核', '備註', '規則版本', '人工更正紀錄']];
   for (const u of res.units) {
     for (const i of u.items) {
       rows.push([
-        opt.batchName,
+        mm(opt.batchName),
         mm(u.label),
         UNIT_STATUS_LABEL[unitStatus(u)],
         i.field,
@@ -126,6 +128,7 @@ export function buildCsvReport(res: FlowResult, opt: ReportOptions): string {
         REVIEW_LABEL[i.review.state],
         mm(i.review.note),
         res.ruleVersion,
+        [i.a, i.b].flatMap((e) => e?.correction?.applied ? [mm(`${e.label}：${e.correction.original || '未讀到'} → ${e.correction.applied.value}（${e.correction.applied.by} ${e.correction.applied.at}）`)] : []).join('；'),
       ]);
     }
   }

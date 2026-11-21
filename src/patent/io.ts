@@ -109,7 +109,7 @@ export function rowsToPatents(rows: string[][], sourceLabel: string): ImportRepo
   if (extra.length) warnings.push(`以下欄位不在範本中，匯入時略過：${extra.join('、')}`);
   const missing = FIELDS.filter((f) => !colOf.has(f.key) && f.key !== 'updatedAt').map((f) => f.label);
   if (missing.length && !legacy) warnings.push(`檔案缺少欄位（將保留空白）：${missing.join('、')}`);
-  if (legacy) warnings.push('偵測到舊版 LegalDesk 格式，已依欄位名稱轉換；舊版狀態值保留原文，可在完整性檢查中調整。');
+  if (legacy) warnings.push('已依欄位名稱轉換舊版 8 欄 CSV。原有狀態可在完整性檢查中調整。');
 
   const records: Patent[] = [];
   rows.slice(hi + 1).forEach((r, i) => {
@@ -133,7 +133,7 @@ export function rowsToPatents(rows: string[][], sourceLabel: string): ImportRepo
   const ids = records.map((r) => r.id).filter(Boolean);
   const dup = ids.filter((x, i) => ids.indexOf(x) !== i);
   if (dup.length) errors.push(`內部案件編號重複：${[...new Set(dup)].join('、')}`);
-  return { records, version: legacy ? '1.0（LegalDesk 概念驗證版）' : '?', legacy, warnings, errors };
+  return { records, version: legacy ? '1.0（舊版 8 欄 CSV）' : '?', legacy, warnings, errors };
 }
 
 export async function importPatentFile(name: string, data: Uint8Array): Promise<ImportReport> {

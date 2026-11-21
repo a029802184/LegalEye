@@ -23,7 +23,6 @@ const NAV = [
 ];
 
 export function pageTitle(path: string): string {
-  if (path === '/check/quick') return '快速文字校對';
   if (path.startsWith('/check/')) {
     const flow = FLOWS.find((f) => f.id === path.slice(7, 8));
     if (flow) return flow.short;
@@ -49,7 +48,6 @@ function NavList({ path, onNavigate }: { path: string; onNavigate?: () => void }
                 {FLOWS.map((f) => (
                   <a key={f.id} className="sub" href={`#/check/${f.id}`} aria-current={path === `/check/${f.id}` ? 'page' : undefined} onClick={onNavigate}>{f.short}</a>
                 ))}
-                <a className="sub" href="#/check/quick" aria-current={path === '/check/quick' ? 'page' : undefined} onClick={onNavigate}>快速文字校對</a>
               </div>
             )}
           </div>

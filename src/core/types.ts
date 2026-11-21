@@ -17,6 +17,7 @@ export interface SourceFile {
 }
 
 export type ExtractMethod = 'pdf-text' | 'ocr' | 'docx' | 'xlsx' | 'txt' | 'manual';
+export interface PageRegion { left: number; top: number; width: number; height: number }
 
 export interface Provenance {
   fileId: string;
@@ -37,6 +38,7 @@ export interface Provenance {
   confidence: number;
   /** 原始文字片段 */
   raw: string;
+  region?: PageRegion;
 }
 
 export function provLabel(p: Provenance | undefined): string {
@@ -45,7 +47,8 @@ export function provLabel(p: Provenance | undefined): string {
   if (p.page) parts.push(`第 ${p.page} 頁`);
   if (p.para !== undefined && p.kind === 'docx') parts.push(`第 ${p.para + 1} 段`);
   if (p.sheet) parts.push(`${p.sheet}!${p.cell ?? ''}`);
-  if (p.method === 'ocr') parts.push(`OCR 信心 ${Math.round(p.confidence * 100)}%`);
+  if (p.method === 'ocr') parts.push('掃描文字');
+  if (p.method === 'manual') parts.push('人工確認');
   return parts.join('・');
 }
 
@@ -99,6 +102,7 @@ export interface PageText {
   needsOcr?: boolean;
   ocrFailed?: boolean;
   rotationSuspect?: boolean;
+  scan?: { raw: string; alternate?: string; lines: { text: string; region: PageRegion }[] };
 }
 
 export type ExtractStatus = 'ok' | 'partial' | 'needs-ocr' | 'error' | 'unsupported';
@@ -110,6 +114,7 @@ export type DocRole =
   | 'payment-order' // 支付命令正本
   | 'finality-cert' // 確定證明書
   | 'service-proof' // 送達證書
+  | 'tax-record' // 查稅／財產所得資料
   | 'payment-order-petition' // 支付命令聲請狀
   | 'debt-statement' // 欠費明細／帳單
   | 'household-register' // 戶籍謄本
@@ -127,6 +132,7 @@ export const ROLE_LABEL: Record<DocRole, string> = {
   'payment-order': '支付命令',
   'finality-cert': '確定證明書',
   'service-proof': '送達證書',
+  'tax-record': '查稅／財產所得資料',
   'payment-order-petition': '支付命令聲請狀',
   'debt-statement': '欠費明細／帳單',
   'household-register': '戶籍謄本',
@@ -168,12 +174,12 @@ export type CheckStatus =
   | 'not-applicable'; // 不適用
 
 export const STATUS_LABEL: Record<CheckStatus, string> = {
-  match: '一致',
-  mismatch: '不一致',
+  match: '已核對一致',
+  mismatch: '內容不同，請確認',
   partial: '部分核對',
   missing: '缺資料',
-  unreadable: '辨識失敗',
-  'needs-review': '需人工判斷',
+  unreadable: '文字尚未讀清楚',
+  'needs-review': '請看原件確認',
   'not-applicable': '不適用',
 };
 
@@ -193,7 +199,18 @@ export interface Evidence {
   raw: string;
   normalized: string;
   prov?: Provenance;
+  correction?: FieldCorrectionTarget;
 }
+
+export interface FieldCorrectionTarget {
+  key: string;
+  field: 'name' | 'id' | 'address' | 'case';
+  original: string;
+  applied?: FieldCorrection;
+}
+
+export interface FieldCorrection { value: string; by: string; at: string }
+export interface ManualPair { person?: string; statement?: string; source?: string }
 
 export interface CheckItem {
   id: string;
@@ -216,7 +233,7 @@ export const UNIT_STATUS_LABEL: Record<UnitStatus, string> = {
   consistent: '已核對一致',
   inconsistent: '發現不一致',
   missing: '缺資料',
-  pending: 'OCR／配對待確認',
+  pending: '有資料需確認',
   'not-applicable': '不適用',
 };
 
@@ -231,6 +248,8 @@ export interface CheckUnit {
   id: string;
   label: string;
   subLabel?: string;
+  pairKey?: string;
+  serviceKey?: string;
   match?: MatchInfo;
   /** 該單元使用的文件（角色 → 檔案 id） */
   docs: { role: DocRole; fileId: string; pages?: number[] }[];
@@ -261,7 +280,7 @@ export function unitStatus(u: CheckUnit): UnitStatus {
   if (s.includes('mismatch')) return 'inconsistent';
   if (u.match?.needsManual) return 'pending';
   if (!s.length) return 'missing';
-  if (s.includes('unreadable') || s.includes('needs-review')) return 'pending';
+  if (s.includes('unreadable') || s.includes('needs-review') || s.includes('partial')) return 'pending';
   if (s.includes('missing')) return 'missing';
   if (s.every((x) => x === 'not-applicable')) return 'not-applicable';
   return 'consistent';

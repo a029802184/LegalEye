@@ -7,7 +7,6 @@ import { PatentsPage } from './pages/Patents';
 import { CheckPage } from './pages/Check';
 import { RulesPage } from './pages/Rules';
 import { HelpPage } from './pages/Help';
-import { QuickCheckPage } from './pages/QuickCheck';
 import type { FlowId } from './core/types';
 
 export function App() {
@@ -22,7 +21,6 @@ export function App() {
 
   let page;
   if (path.startsWith('/patents')) page = <PatentsPage key={query} query={query} />;
-  else if (path.startsWith('/check/quick')) page = <QuickCheckPage />;
   else if (path.startsWith('/check')) {
     const f = path.slice(7, 8) as FlowId;
     page = <CheckPage flow={['A', 'B', 'C', 'D'].includes(f) ? f : undefined} />;

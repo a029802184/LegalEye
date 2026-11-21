@@ -77,6 +77,7 @@ test('首頁、品牌、導覽', async ({ page }) => {
     await cards.locator(`[href="#/check/${flow}"]`).click();
     await expect(page).toHaveURL(new RegExp(`/check/${flow}$`));
     await expect(page.getByRole('button', { name: '選擇檔案' })).toBeVisible();
+    await expect(page.getByText(/資料只在這台裝置處理/)).toBeVisible();
     await expect(page.getByRole('button', { name: /示範/ })).toHaveCount(0);
     await expect(page.getByRole('heading', { name: '核對結果', exact: true })).toHaveCount(0);
     await noHorizontalOverflow(page);
@@ -86,6 +87,16 @@ test('首頁、品牌、導覽', async ({ page }) => {
       await page.getByRole('button', { name: '開始核對', exact: true }).click();
       await expect(page.getByRole('heading', { name: '核對結果', exact: true })).toBeVisible();
       await expect(page.locator('.unit-list button').first()).toBeVisible();
+      if (flow === 'B') {
+        const steps = page.locator('.workflow-steps');
+        await steps.getByRole('button', { name: '確認案件配對' }).click();
+        await steps.getByRole('button', { name: '當事人與金額' }).click();
+        await steps.getByRole('button', { name: '利息起算日', exact: true }).click();
+        await expect(page.locator('#interest-review')).toBeVisible();
+        await expect(page.getByText('補充這一案的送達日期')).toHaveCount(0);
+        await steps.getByRole('button', { name: '檢視與下載報告' }).click();
+        await expect(page.getByRole('button', { name: '下載核對報告' })).toBeVisible();
+      }
     }
     await page.goto('./#/');
   }
@@ -189,17 +200,26 @@ test('批次核對：ZIP → 11 人清單 → 單人詳情 → 來源切換 → 
     await expect(page.locator('.unit-list')).toBeVisible();
   }
 
-  await page.getByRole('button', { name: '下載 HTML 報告' }).click();
+  await page.getByRole('button', { name: '下載核對報告' }).click();
   const rep = await nextDownload(page, /核對報告.*\.html$/);
   const { name, text: html } = rep;
   expect(name).toMatch(/核對報告.*\.html$/);
   expect(html).toContain('請前端更正樓層');
   expect(html).toContain('免責說明');
   expect(html).not.toMatch(/[A-Z][12]\d{8}/); // 預設遮罩身分證
+  await page.getByText('其他下載格式', { exact: true }).click();
   await page.getByRole('button', { name: '下載 CSV' }).click();
   const csv = await nextDownload(page, /\.csv$/);
   expect(csv.text).toContain('張家豪');
   expect(csv.text).toContain('需修正');
+
+  if (w < 1024) await page.locator('.unit-list button', { hasText: '張家豪' }).click();
+  if (!(await addr.getAttribute('aria-expanded') === 'true')) await addr.click();
+  const sourceCard = detail.locator('.ev-card').filter({ has: page.getByRole('heading', { name: '來源 A：戶籍謄本' }) });
+  await sourceCard.getByText('更正讀取結果', { exact: true }).click();
+  await sourceCard.getByLabel('人工確認為').fill('新北市板橋區甲路99號5樓');
+  await sourceCard.getByRole('button', { name: '儲存更正並重算' }).click();
+  await expect(sourceCard.getByText('已由人工確認')).toBeVisible();
 });
 
 test('陳報狀：附件核對與 Excel 驗算（含 XLSX、DOCX、PDF）', async ({ page }) => {
@@ -233,29 +253,64 @@ test('惡意 ZIP 路徑與 XSS 檔名不會執行', async ({ page }) => {
   expect(await page.evaluate(() => (window as unknown as { __xss?: number }).__xss)).toBeUndefined();
 });
 
-test('快速文字校對（舊版功能保留）', async ({ page }) => {
+test('已移除的舊路徑回到四種核對流程', async ({ page }) => {
   await page.goto('./#/check/quick');
-  await expect(page.getByRole('button', { name: /示範/ })).toHaveCount(0);
-  await page.getByLabel('執行名義案號').fill('115年度訴字第123號');
-  await page.getByLabel('聲請狀全文').fill('依臺灣○○地方法院115年度訴字第132號判決，請求給付本金新臺幣100,000元。');
-  await page.getByRole('button', { name: '執行文字檢查' }).click();
-  await expect(page.getByRole('button', { name: /執行名義案號（基準資料）/ })).toBeVisible();
-  await expect(page.getByText(/占位符：.*○○/).first()).toBeVisible();
+  await expect(page.locator('.flow-card')).toHaveCount(4);
+  await expect(page.locator('a[href="#/check/quick"]')).toHaveCount(0);
   await noHorizontalOverflow(page);
-  await shot(page, '07-quick-check');
+  await shot(page, '07-check-types');
 });
 
-test('離線 OCR：掃描 PDF 以本機 Tesseract 處理（不連外部網路）', async ({ page }, info) => {
-  test.skip(!info.project.name.startsWith('desktop'), 'OCR 較耗資源，只在桌面視窗執行');
+test('離線 OCR：掃描 PDF 以本機 Tesseract 處理（不連外部網路）', async ({ page }) => {
   const external: string[] = [];
   page.on('request', (r) => {
     if (!r.url().startsWith('http://localhost:4173') && !r.url().startsWith('blob:') && !r.url().startsWith('data:')) external.push(r.url());
   });
   await page.goto('./#/check/C');
-  await expect(page.getByText('OCR 元件已就緒（離線）')).toBeVisible();
+  await expect(page.getByText('掃描文字辨識已準備好，可在本機處理檔案。')).toBeVisible();
   const { buildPdf } = await import('../tests/fixtures/builders');
   const pdf = buildPdf([{ lines: [], scanned: true }]);
   await page.getByTestId('file-input').setInputFiles({ name: '99990001.pdf', mimeType: 'application/pdf', buffer: Buffer.from(pdf) });
-  await expect(page.getByText(/已執行本機 OCR/)).toBeVisible({ timeout: 90_000 });
+  await expect(page.getByText(/已在本機辨識 1 張掃描頁/)).toBeVisible({ timeout: 90_000 });
+  await page.getByRole('button', { name: '查看掃描原頁' }).click();
+  await page.getByRole('button', { name: '重新辨識這一頁' }).click();
+  await expect(page.getByText(/重新辨識的候選文字/)).toBeVisible({ timeout: 90_000 });
   expect(external, '不得連線外部服務').toEqual([]);
+});
+
+test('藍底合成掃描頁可在本機辨識及顯示候選', async ({ page }, info) => {
+  test.skip(!info.project.name.startsWith('desktop'), '實際掃描辨識在桌面執行');
+  await page.goto('./#/check/B');
+  const jpeg = await page.evaluate(() => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 900;
+    canvas.height = 480;
+    const ctx = canvas.getContext('2d')!;
+    ctx.fillStyle = '#c1d8eb';
+    ctx.fillRect(0, 0, 900, 480);
+    ctx.fillStyle = '#aebfd0';
+    ctx.font = '56px Microsoft JhengHei';
+    ctx.fillText('測試樣張', 470, 235);
+    ctx.translate(40, 60);
+    ctx.rotate(0.021);
+    ctx.fillStyle = '#21364a';
+    ctx.font = '42px Microsoft JhengHei';
+    ctx.fillText('國稅局查稅資料　合成測試文件', 20, 40);
+    ctx.font = '30px Microsoft JhengHei';
+    ctx.fillText('第三人：甲測試股份有限公司', 20, 115);
+    ctx.fillText('法定代理人：乙測試', 20, 175);
+    return canvas.toDataURL('image/jpeg', 0.88).split(',')[1];
+  });
+  const { buildPdf } = await import('../tests/fixtures/builders');
+  const pdf = buildPdf([{ lines: [], raster: { width: 900, height: 480, jpegHex: Buffer.from(jpeg, 'base64').toString('hex') } }]);
+  await page.getByTestId('file-input').setInputFiles({ name: '合成查稅資料.pdf', mimeType: 'application/pdf', buffer: Buffer.from(pdf) });
+  await expect(page.getByText(/已在本機辨識 1 張掃描頁/)).toBeVisible({ timeout: 90_000 });
+  await page.getByRole('button', { name: '查看掃描原頁' }).click();
+  await page.getByText('辨識原文及其他候選').click();
+  const recognized = await page.locator('.viewer-text details pre').allTextContents();
+  expect(recognized.join('').replace(/\s/g, '')).toMatch(/測試|代理人|有限公司/);
+  const role = page.getByLabel('合成查稅資料.pdf 的文件角色');
+  if (await role.inputValue() !== 'tax-record') await role.selectOption('tax-record');
+  await expect(role).toHaveValue('tax-record');
+  await noHorizontalOverflow(page);
 });

@@ -5,12 +5,12 @@
 import { centsToString, findLabeledAmounts, type LabeledAmount } from '../core/amount';
 import { compareAddress, compareNames, uid } from '../core/text';
 import { compareIds, maskId, validateTwId } from '../core/idno';
-import { findAddresses, findDebtorNames, findIds, findLabeledNames, findPhones, findSerials, type Hit } from '../core/extract';
+import { debtorFields, findAddresses, findDebtorNames, findIds, findLabeledNames, findPhones, findSerials, labeledNameFields, type Hit } from '../core/extract';
 import { findDates, fmtBoth, parseDate, sameDay, type YMD } from '../core/date';
 import { detectInterestClause } from '../core/service';
 import { RULESET_VERSION } from '../core/rules';
-import type { BatchIssue, CheckItem, CheckUnit, ExtractedDoc, FlowResult, Provenance } from '../core/types';
-import { ev, item, provAt, type FlowContext } from './common';
+import type { BatchIssue, CheckItem, CheckUnit, Evidence, ExtractedDoc, FieldCorrection, FlowResult, Provenance } from '../core/types';
+import { ev, item, petitionSections, provAt, type FlowContext } from './common';
 
 export interface Person {
   key: string;
@@ -22,7 +22,6 @@ export interface Person {
   prov: Provenance;
   idProv?: Provenance;
   addrProv?: Provenance;
-  lowConfidence: boolean;
 }
 
 /** 合併戶籍謄本 → 個人資料（保留頁碼；一頁可能有多位家屬，不會自動認定誰是債務人） */
@@ -31,27 +30,33 @@ export function personsFromHousehold(doc: ExtractedDoc): Person[] {
   for (const p of doc.pages) {
     const t = p.text.normalize('NFKC');
     const ids = findIds(t);
-    const names = findLabeledNames(t);
-    const addr = findAddresses(t)[0];
-    const low = p.method === 'ocr' && p.confidence < 0.6;
-    if (!ids.length && names.length) {
-      for (const n of names) out.push({ key: uid('p'), name: n.value, doc, page: p.page, prov: provAt(doc, p.page, n.index, n.raw), address: addr?.value, addrProv: addr ? provAt(doc, p.page, addr.index, addr.raw) : undefined, lowConfidence: low });
-      continue;
+    const current = t.split(/(?:地址變更|戶址變更|遷徙記事|全戶動態記事|個人記事)/)[0];
+    const addr = findAddresses(current).find((a) => /^(戶籍地址|戶籍地)/.test(a.raw));
+    const labels = labeledNameFields(t);
+    const groups = labels.map((m, i) => {
+      const at = m.index;
+      const end = labels[i + 1]?.index ?? t.length;
+      const n = m.name;
+      const candidates = ids.filter((id) => id.index >= at && id.index < end && id.index - at < 85 && !/(?:父|母|配偶|戶長)(?:親|姓名)?\s*[:：][^\n]*$/.test(t.slice(at, id.index)));
+      return { n, id: candidates.length === 1 ? candidates[0] : undefined, at };
+    });
+    if (!labels.length) {
+      const labeledIds = ids.filter((id) => /(?:身分證(?:統一)?(?:編號|字號)?|統一編號)\s*[:：]?\s*$/.test(t.slice(Math.max(0, id.index - 28), id.index))
+        && !/(?:父|母|配偶|戶長)[^\n]*$/.test(t.slice(Math.max(0, id.index - 40), id.index)));
+      const id = labeledIds.length === 1 ? labeledIds[0] : undefined;
+      groups.push({ n: undefined, id, at: id?.index ?? 0 });
     }
-    for (const id of ids) {
-      // 身分證字號前方最近的「姓名」
-      const n = [...names].reverse().find((x) => x.index < id.index && id.index - x.index < 80) ?? names.find((x) => x.index > id.index && x.index - id.index < 40);
+    for (const { n, id, at } of groups) {
       out.push({
-        key: uid('p'),
+        key: `${doc.file.id}:${p.page}:${at}`,
         name: n?.value ?? '',
-        id: id.value,
+        id: id?.value,
         address: addr?.value,
         doc,
         page: p.page,
-        prov: provAt(doc, p.page, n?.index ?? id.index, n?.raw ?? id.raw),
-        idProv: provAt(doc, p.page, id.index, id.raw),
+        prov: provAt(doc, p.page, n?.index ?? at, n?.raw ?? ''),
+        idProv: id ? provAt(doc, p.page, id.index, id.raw) : undefined,
         addrProv: addr ? provAt(doc, p.page, addr.index, addr.raw) : undefined,
-        lowConfidence: low,
       });
     }
   }
@@ -92,6 +97,7 @@ export function readStatement(doc: ExtractedDoc): Statement {
 }
 
 interface PetitionFacts {
+  key: string;
   doc: ExtractedDoc;
   name?: Hit & { prov: Provenance };
   id?: Hit & { prov: Provenance };
@@ -105,7 +111,7 @@ interface PetitionFacts {
   clauseType: string;
 }
 
-function readPetition(doc: ExtractedDoc): PetitionFacts {
+function readPetition(doc: ExtractedDoc, key: string): PetitionFacts {
   const t = doc.fullText.normalize('NFKC');
   const wrap = <T extends { index: number; raw: string }>(h: T | undefined) => {
     if (!h) return undefined;
@@ -116,11 +122,13 @@ function readPetition(doc: ExtractedDoc): PetitionFacts {
   const am = findLabeledAmounts(t);
   const bd = findDates(t).find((d) => d.valid && /(計算至|截至|基準日|結算日)[^\n]{0,6}$/.test(t.slice(Math.max(0, d.index - 10), d.index)));
   const clause = detectInterestClause(t, parseDate);
+  const party = debtorFields(t);
   return {
+    key,
     doc,
-    name: wrap(findDebtorNames(t)[0]),
-    id: wrap(findIds(t)[0]),
-    address: wrap(findAddresses(t)[0]),
+    name: wrap(party.name),
+    id: wrap(party.id),
+    address: wrap(party.address),
     serials: findSerials(t).map((s) => s.value),
     phones: findPhones(t).map((p) => p.value),
     amounts: am,
@@ -136,23 +144,20 @@ function scorePerson(p: PetitionFacts, x: Person): { score: number; why: string[
   const why: string[] = [];
   if (p.id && x.id) {
     const r = compareIds(p.id.value, x.id);
-    if (r === 'full') {
+    if (r === 'full' && validateTwId(p.id.value) && validateTwId(x.id)) {
       score += 0.6;
       why.push('身分證字號一致');
     } else if (r === 'partial') {
       score += 0.3;
       why.push('身分證可見部分一致');
-    } else if (r === 'mismatch') score -= 0.3;
+    } else if (r === 'mismatch') return { score: 0, why: [] };
   }
   if (p.name && x.name) {
     const r = compareNames(p.name.value, x.name);
     if (r === 'exact' || r === 'alias') {
       score += 0.3;
       why.push('姓名一致');
-    } else if (r === 'variant-suspect') {
-      score += 0.1;
-      why.push('姓名近似');
-    }
+    } else return { score: 0, why: [] };
   }
   if (p.address && x.address && compareAddress(p.address.value, x.address).equal) {
     score += 0.1;
@@ -165,7 +170,7 @@ function scoreStatement(p: PetitionFacts, s: Statement): { score: number; why: s
   let score = 0;
   const why: string[] = [];
   const pt = p.doc.fullText.normalize('NFKC');
-  if (s.fileNumber && pt.includes(s.fileNumber)) {
+  if (s.fileNumber && pt.match(/\d+/g)?.includes(s.fileNumber)) {
     score += 0.5;
     why.push(`聲請狀含檔名編號 ${s.fileNumber}`);
   }
@@ -173,7 +178,8 @@ function scoreStatement(p: PetitionFacts, s: Statement): { score: number; why: s
     score += 0.5;
     why.push('客戶／申請編號一致');
   }
-  if (p.name && s.names.some((n) => compareNames(n.value, p.name!.value) === 'exact')) {
+  if (p.name && s.names.length) {
+    if (!s.names.some((n) => ['exact', 'alias'].includes(compareNames(n.value, p.name!.value)))) return { score: 0, why: [] };
     score += 0.3;
     why.push('姓名一致');
   }
@@ -187,6 +193,19 @@ function scoreStatement(p: PetitionFacts, s: Statement): { score: number; why: s
 export interface FlowCContext extends FlowContext {
   /** 人工配對：聲請狀 fileId → { personKey?, statementFileId? } */
   manualPairs?: Record<string, { person?: string; statement?: string }>;
+  corrections?: Record<string, FieldCorrection>;
+}
+
+function householdEvidence(person: Person, petition: string, field: 'name' | 'id' | 'address', ctx: FlowCContext): Evidence {
+  // Same household member across separate petitions is an independent correction target.
+  const original = person[field] ?? '';
+  const key = `${petition}:${person.key}:${field}`;
+  const applied = ctx.corrections?.[key];
+  const source = (field === 'address' ? person.addrProv : field === 'id' ? person.idProv : person.prov) ?? person.prov;
+  return {
+    ...ev('戶籍謄本', original, applied?.value ?? original, applied ? { ...source, method: 'manual', confidence: 1 } : source),
+    correction: { key, field, original, applied },
+  };
 }
 
 export interface FlowCExtra {
@@ -217,7 +236,10 @@ export function runFlowC(docs: ExtractedDoc[], ctx: FlowCContext): FlowResult & 
 
   const persons = households.flatMap(personsFromHousehold);
   const statements = stDocs.map(readStatement);
-  const pets = petitions.map(readPetition);
+  const pets = petitions.flatMap((doc) => {
+    const sections = petitionSections(doc);
+    return sections.map((section, i) => readPetition(section, sections.length === 1 ? doc.file.id : `${doc.file.id}:${i}`));
+  });
 
   const hhPages = households.reduce((n, d) => n + d.pages.length, 0);
   if (households.length && hhPages !== petitions.length) {
@@ -233,11 +255,11 @@ export function runFlowC(docs: ExtractedDoc[], ctx: FlowCContext): FlowResult & 
   const stClaims = new Map<string, string[]>();
   const choice = new Map<string, { person?: Person; pScore: number; pWhy: string[]; pAmb: boolean; st?: Statement; sScore: number; sWhy: string[]; sAmb: boolean }>();
   for (const p of pets) {
-    const man = ctx.manualPairs?.[p.doc.file.id];
+    const man = ctx.manualPairs?.[p.key];
     const ps = persons.map((x) => ({ x, ...scorePerson(p, x) })).sort((a, b) => b.score - a.score);
     const ss = statements.map((s) => ({ s, ...scoreStatement(p, s) })).sort((a, b) => b.score - a.score);
-    let person = ps[0] && ps[0].score >= 0.3 ? ps[0] : undefined;
-    let pAmb = !!person && ps.length > 1 && Math.abs(ps[0].score - ps[1].score) < 0.05 && ps[1].score >= 0.3;
+    let person = ps[0] && ps[0].score >= 0.39 ? ps[0] : undefined;
+    let pAmb = !!person && ps.length > 1 && Math.abs(ps[0].score - ps[1].score) < 0.05;
     if (man?.person) {
       const mp = persons.find((x) => x.key === man.person);
       person = mp ? { x: mp, score: 1, why: ['人工配對'] } : undefined;
@@ -250,59 +272,72 @@ export function runFlowC(docs: ExtractedDoc[], ctx: FlowCContext): FlowResult & 
       st = ms ? { s: ms, score: 1, why: ['人工配對'] } : undefined;
       sAmb = false;
     }
-    if (person) personClaims.set(person.x.key, [...(personClaims.get(person.x.key) ?? []), p.doc.file.id]);
-    if (st) stClaims.set(st.s.doc.file.id, [...(stClaims.get(st.s.doc.file.id) ?? []), p.doc.file.id]);
-    choice.set(p.doc.file.id, { person: person?.x, pScore: person?.score ?? 0, pWhy: person?.why ?? [], pAmb, st: st?.s, sScore: st?.score ?? 0, sWhy: st?.why ?? [], sAmb });
+    // 先記錄原本的自動候選。人工調整一份聲請狀不會改寫其他案件的結果。
+    if (ps[0]?.score >= 0.39) personClaims.set(ps[0].x.key, [...(personClaims.get(ps[0].x.key) ?? []), p.key]);
+    if (ss[0]?.score >= 0.5) stClaims.set(ss[0].s.doc.file.id, [...(stClaims.get(ss[0].s.doc.file.id) ?? []), p.key]);
+    choice.set(p.key, { person: person?.x, pScore: person?.score ?? 0, pWhy: person?.why ?? [], pAmb, st: st?.s, sScore: st?.score ?? 0, sWhy: st?.why ?? [], sAmb });
   }
 
   const units: CheckUnit[] = [];
   for (const p of pets) {
-    const c = choice.get(p.doc.file.id)!;
-    const pConflict = c.person ? (personClaims.get(c.person.key)?.length ?? 0) > 1 : false;
-    const sConflict = c.st ? (stClaims.get(c.st.doc.file.id)?.length ?? 0) > 1 : false;
+    const c = choice.get(p.key)!;
+    const manual = ctx.manualPairs?.[p.key];
+    const pConflict = c.person && !manual?.person && (personClaims.get(c.person.key)?.length ?? 0) > 1;
+    const sConflict = c.st && !manual?.statement && (stClaims.get(c.st.doc.file.id)?.length ?? 0) > 1;
+    const person = c.pAmb || pConflict ? undefined : c.person;
+    const statement = c.sAmb || sConflict ? undefined : c.st;
     const items: CheckItem[] = [];
     const evidence = [
-      c.person ? `戶籍：${c.person.doc.file.path} 第 ${c.person.page} 頁（${c.pWhy.join('、')}；分數 ${c.pScore.toFixed(2)}）` : '戶籍：未配對',
-      c.st ? `帳務：${c.st.doc.file.path}（${c.sWhy.join('、')}；分數 ${c.sScore.toFixed(2)}）` : '帳務：未配對',
+      `聲請狀：${p.doc.file.path}${p.name?.prov.page ? ` 第 ${p.name.prov.page} 頁` : ''}`,
+      person ? `戶籍：${person.doc.file.path} 第 ${person.page} 頁（${c.pWhy.join('、')}）` : '戶籍：尚未配對，請選擇對應文件',
+      statement ? `帳務：${statement.doc.file.path}（${c.sWhy.join('、')}）` : '帳務：尚未配對，請選擇對應文件',
     ];
     if (pConflict) evidence.push('同一筆戶籍資料被多份聲請狀配對，需人工確認');
     if (sConflict) evidence.push('同一份帳務資料被多份聲請狀配對，需人工確認');
     if (c.pAmb) evidence.push('戶籍資料有多個相同分數的候選');
     if (c.sAmb) evidence.push('帳務資料有多個相同分數的候選');
-    const needsManual = !c.person || !c.st || pConflict || sConflict || c.pAmb || c.sAmb || c.pScore < 0.6 || c.sScore < 0.5;
+    const needsManual = !person || !statement;
+    const household = person ? {
+      name: householdEvidence(person, p.key, 'name', ctx),
+      id: householdEvidence(person, p.key, 'id', ctx),
+      address: householdEvidence(person, p.key, 'address', ctx),
+    } : undefined;
+    const missingPerson = households.length ? '尚未確定這份戶籍資料對應哪位債務人，請確認配對' : '尚未附上戶籍謄本';
+    const identityStatus = households.length ? 'needs-review' : 'missing';
 
     // 姓名
-    if (!c.person) items.push(item(ctx, 'C.name', '姓名（戶籍）', 'missing', 'high', '戶籍謄本中找不到對應的人（缺件或需人工配對）'));
-    else if (p.name) {
-      const r = compareNames(c.person.name, p.name.value);
+    if (!household) items.push(item(ctx, 'C.name', '姓名（戶籍）', identityStatus, 'high', missingPerson));
+    else if (p.name && household.name.normalized) {
+      const r = compareNames(household.name.normalized, p.name.value);
       items.push(
         item(ctx, 'C.name', '姓名（戶籍）', r === 'exact' || r === 'alias' ? 'match' : r === 'variant-suspect' ? 'needs-review' : 'mismatch', 'high', r === 'exact' ? '姓名一致' : r === 'alias' ? '以別名對應' : r === 'variant-suspect' ? '一字不同或疑似異體字（可能為 OCR 誤判），請看原頁' : '姓名不同', {
-          a: ev('戶籍謄本', c.person.name, c.person.name, c.person.prov),
+          a: household.name,
           b: ev('聲請狀', p.name.raw, p.name.value, p.name.prov),
         }),
       );
-    } else items.push(item(ctx, 'C.name', '姓名（戶籍）', 'missing', 'high', '聲請狀未辨識到債務人姓名'));
+    } else items.push(item(ctx, 'C.name', '姓名（戶籍）', 'unreadable', 'high', !p.name ? '聲請狀中的債務人姓名尚未讀出' : '戶籍謄本有讀到文字，但姓名尚未抓出，請看原件', { a: household.name }));
     // 身分證
-    if (c.person?.id && p.id) {
-      const r = compareIds(c.person.id, p.id.value);
+    if (household?.id.normalized && p.id) {
+      const r = compareIds(household.id.normalized, p.id.value);
       const checksum = validateTwId(p.id.value);
       items.push(
         item(ctx, 'C.id', '身分證字號（戶籍）', r === 'full' ? (checksum ? 'match' : 'needs-review') : r === 'partial' ? 'partial' : r === 'mismatch' ? 'mismatch' : 'missing', 'high', r === 'full' ? (checksum ? '全碼一致，檢查碼正確（不代表確屬本人）' : '全碼一致但檢查碼不符，請確認原文') : r === 'partial' ? '遮罩，僅部分核對' : r === 'mismatch' ? '身分證字號不同' : '無法比對', {
-          a: ev('戶籍謄本', maskId(c.person.id), maskId(c.person.id), c.person.idProv),
+          a: household.id,
           b: ev('聲請狀', maskId(p.id.value), maskId(p.id.value), p.id.prov),
         }),
       );
-    } else items.push(item(ctx, 'C.id', '身分證字號（戶籍）', 'missing', 'high', !p.id ? '聲請狀未辨識到身分證字號' : '戶籍資料未取得身分證字號'));
+    } else items.push(item(ctx, 'C.id', '身分證字號（戶籍）', household ? 'unreadable' : identityStatus, 'high', household ? '身分證字號尚未讀出，請看原件' : missingPerson, { a: household?.id }));
     // 地址
-    if (c.person?.address && p.address) {
-      const r = compareAddress(c.person.address, p.address.value);
+    if (household?.address.normalized && p.address) {
+      const r = compareAddress(household.address.normalized, p.address.value, household.address.prov?.method === 'ocr' || p.address.prov.method === 'ocr');
       items.push(
-        item(ctx, 'C.address', '地址（戶籍）', r.equal ? 'match' : 'mismatch', 'medium', r.equal ? '地址一致（已正規化全半形、空白、郵遞區號、臺台）' : `地址自第 ${(r.diffAt ?? 0) + 1} 字起不同；門牌、樓層、里鄰不同不視為相同`, {
-          a: ev('戶籍謄本', c.person.address, c.person.address, c.person.addrProv),
+        item(ctx, 'C.address', '地址（戶籍）', r.equal ? 'match' : r.state === 'suspectedOcrError' ? 'needs-review' : 'mismatch', 'medium', r.detail, {
+          a: household.address,
           b: ev('聲請狀', p.address.raw, p.address.value, p.address.prov),
         }),
       );
-    } else items.push(item(ctx, 'C.address', '地址（戶籍）', 'missing', 'medium', !p.address ? '聲請狀未辨識到地址' : '戶籍資料未取得地址'));
+    } else items.push(item(ctx, 'C.address', '地址（戶籍）', household ? 'unreadable' : identityStatus, 'medium', household ? '住址尚未讀出，請看原件' : missingPerson, { a: household?.address }));
+    c.st = statement;
     // 金額：聲請本金 vs 總欠費
     if (!c.st) items.push(item(ctx, 'C.amount', '聲請本金與欠費', 'missing', 'high', '沒有配對到帳務資料'));
     else if (!c.st.balance) {
@@ -335,12 +370,13 @@ export function runFlowC(docs: ExtractedDoc[], ctx: FlowCContext): FlowResult & 
       items.push(item(ctx, 'C.basedate', '利息起算', 'not-applicable', 'info', `聲請狀記載「${p.clauseRaw}」，支付命令尚未送達，屬條件式請求，不計算日曆日期也不判錯`));
     }
     units.push({
-      id: uid('u'),
-      label: p.name?.value ?? p.doc.file.name,
+      id: `petition:${p.key}`,
+      pairKey: p.key,
+      label: p.name?.value ?? '聲請狀中的債務人尚未辨識',
       subLabel: p.doc.file.path,
       docs: [
-        { role: 'payment-order-petition', fileId: p.doc.file.id },
-        ...(c.person ? [{ role: 'household-register' as const, fileId: c.person.doc.file.id, pages: [c.person.page] }] : []),
+        { role: 'payment-order-petition', fileId: p.doc.file.id, pages: p.doc.pages.map((page) => page.page) },
+        ...(person ? [{ role: 'household-register' as const, fileId: person.doc.file.id, pages: [person.page] }] : []),
         ...(c.st ? [{ role: 'debt-statement' as const, fileId: c.st.doc.file.id }] : []),
       ],
       items,

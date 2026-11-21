@@ -3,7 +3,6 @@ import { useApp, type CheckSession } from '../../state/store';
 import { Icon, StatusBadge, UnitBadge, useMedia } from '../../ui/components';
 import { canShareFiles, download, shareFile, stamp } from '../../ui/util';
 import { buildCsvReport, buildHtmlReport, maskText } from '../../report/report';
-import { caseKey, findCaseNumbers } from '../../core/court';
 import { maskId } from '../../core/idno';
 import {
   provLabel,
@@ -13,11 +12,15 @@ import {
   type CheckItem,
   type CheckUnit,
   type Evidence,
+  type FieldCorrection,
+  type FieldCorrectionTarget,
   type ReviewState,
   type UnitStatus,
 } from '../../core/types';
 import { SERVICE_METHOD_LABEL, type ServiceMethod } from '../../core/service';
 import type { FlowCExtra } from '../../flows/flowC';
+import type { FlowBExtra } from '../../flows/flowB';
+import { findCaseNumbers } from '../../core/court';
 import { DocViewer } from './DocViewer';
 
 type Filter = 'all' | UnitStatus;
@@ -44,7 +47,7 @@ export function Results({ session, onChange, onRerun }: { session: CheckSession;
   const unreadable = items.filter((i) => i.status === 'unreadable').length;
   const done = res.units.filter(unitDone).length;
   const list = res.units.filter((u) => filter === 'all' || unitStatus(u) === filter);
-  // 只有一個核對單位時（例如快速文字校對），手機也直接顯示詳情
+  // 只有一個核對單位時，手機也直接顯示詳情
   const single = res.units.length === 1;
   const unit = res.units.find((u) => u.id === sel) ?? (wide || single ? list[0] : undefined);
 
@@ -95,9 +98,7 @@ export function Results({ session, onChange, onRerun }: { session: CheckSession;
         )}
       </section>
 
-      {res.flow === 'B' && <ServiceForm session={session} onRerun={onRerun} />}
-
-      <div className="result-layout">
+      <div className="result-layout" id="case-review">
         {(wide || !unit) && !(single && !wide) && (
           <section className="panel unit-pane" aria-labelledby="h-units">
             <div className="panel-head">
@@ -171,16 +172,15 @@ export function Results({ session, onChange, onRerun }: { session: CheckSession;
           <div className="toolbar" style={{ marginTop: 10 }}>
             <button className="btn primary" onClick={() => { download(reportName + '.html', html(), 'text/html;charset=utf-8'); toast('已下載 HTML 報告；以瀏覽器開啟後可列印存成 PDF'); }}>
               <Icon name="download" size={18} />
-              下載 HTML 報告
+              下載核對報告
             </button>
-            <button className="btn" onClick={() => download(reportName + '.csv', csv(), 'text/csv;charset=utf-8')}>下載 CSV</button>
             <button
               className="btn"
               onClick={() => {
                 const url = URL.createObjectURL(new Blob([html()], { type: 'text/html' }));
                 const w = window.open(url, '_blank');
                 if (w) w.opener = null;
-                else toast('瀏覽器封鎖了新視窗，請改用「下載 HTML 報告」', 'error');
+                else toast('瀏覽器封鎖了新視窗，請改用「下載核對報告」', 'error');
                 setTimeout(() => URL.revokeObjectURL(url), 60000);
               }}
             >
@@ -193,6 +193,8 @@ export function Results({ session, onChange, onRerun }: { session: CheckSession;
               </button>
             )}
           </div>
+          <p className="cell-sub">核對報告可用瀏覽器開啟、列印或另存 PDF。</p>
+          <details className="report-formats"><summary>其他下載格式</summary><button className="btn small" onClick={() => download(reportName + '.csv', csv(), 'text/csv;charset=utf-8')}>下載 CSV</button></details>
           <p className="cell-sub">
             手機與平板：iPhone／iPad Safari 下載的檔案會放在「檔案」App 的「下載項目」；Android Chrome 會放在「下載」資料夾。分享功能由使用者自行選擇目的地，系統不會自動傳送。
           </p>
@@ -217,7 +219,8 @@ function UnitDetail({
   const [open, setOpen] = useState<string | null>(firstIssue?.id ?? null);
   const st = unitStatus(unit);
   const extra = (session.result as unknown as { extra?: FlowCExtra }).extra;
-  const petitionId = unit.docs.find((d) => d.role === 'payment-order-petition')?.fileId;
+  const sourceChoices = session.flow === 'B' ? (session.result as { extra?: FlowBExtra }).extra?.sources : undefined;
+  const petitionId = unit.pairKey;
 
   return (
     <>
@@ -243,7 +246,7 @@ function UnitDetail({
                   value={session.manualPairs[petitionId]?.person ?? ''}
                   onChange={(e) => onRerun({ ...session, manualPairs: { ...session.manualPairs, [petitionId]: { ...session.manualPairs[petitionId], person: e.target.value || undefined } } })}
                 >
-                  <option value="">（自動配對）</option>
+                  <option value="">{unit.docs.some((d) => d.role === 'household-register') ? '使用自動配對' : '尚未配對，請選擇對應人物'}</option>
                   {extra.persons.map((p) => (
                     <option key={p.key} value={p.key}>
                       {p.name || '（姓名未辨識）'} {p.id ? maskId(p.id) : ''}・{p.doc.file.name} 第 {p.page} 頁
@@ -258,7 +261,7 @@ function UnitDetail({
                   value={session.manualPairs[petitionId]?.statement ?? ''}
                   onChange={(e) => onRerun({ ...session, manualPairs: { ...session.manualPairs, [petitionId]: { ...session.manualPairs[petitionId], statement: e.target.value || undefined } } })}
                 >
-                  <option value="">（自動配對）</option>
+                  <option value="">{unit.docs.some((d) => d.role === 'debt-statement') ? '使用自動配對' : '尚未配對，請選擇對應帳務資料'}</option>
                   {extra.statements.map((s) => (
                     <option key={s.doc.file.id} value={s.doc.file.id}>
                       {s.doc.file.path}
@@ -268,13 +271,25 @@ function UnitDetail({
               </label>
             </div>
           )}
+          {session.flow === 'B' && unit.pairKey && !!sourceChoices?.length && (unit.match.needsManual || session.manualPairs[unit.pairKey]?.source) && (
+            <label className="field">
+              <span>確認此案的來源文件</span>
+              <select className="input" value={session.manualPairs[unit.pairKey]?.source ?? ''} onChange={(e) => {
+                const key = unit.pairKey!;
+                onRerun({ ...session, manualPairs: { ...session.manualPairs, [key]: { source: e.target.value || undefined } } });
+              }}>
+                <option value="">尚未選擇來源</option>
+                {sourceChoices.map((source) => <option key={source.key} value={source.key}>{source.label}</option>)}
+              </select>
+            </label>
+          )}
         </div>
       )}
       <ul className="item-list">
         {unit.items.map((i) => {
           const isOpen = open === i.id;
           return (
-            <li key={i.id}>
+            <li key={i.id} id={i.field === '利息起算日' ? 'interest-review' : undefined}>
               <button className="item-row" aria-expanded={isOpen} onClick={() => setOpen(isOpen ? null : i.id)}>
                 <span className="f">{i.field}</span>
                 <span><StatusBadge status={i.status} /></span>
@@ -283,17 +298,19 @@ function UnitDetail({
                   {i.review.state !== 'pending' ? `✔ ${REVIEW_LABEL[i.review.state]}` : `優先 ${SEVERITY_LABEL[i.severity]}`}
                 </span>
               </button>
-              {isOpen && <ItemEvidence item={i} session={session} onReview={(p) => onReview(unit, i, p)} />}
+              {isOpen && <ItemEvidence item={i} session={session} onReview={(p) => onReview(unit, i, p)} onCorrect={(key, correction) => onRerun({ ...session, corrections: { ...session.corrections, [key]: correction } })} />}
             </li>
           );
         })}
         {!unit.items.length && <li className="empty">沒有檢查項目</li>}
       </ul>
+      {unit.serviceKey && unit.items.some((item) => item.field === '利息起算日' && item.status === 'needs-review' && item.calc?.includes('送達翌日')) &&
+        <ServiceForm key={unit.serviceKey} serviceKey={unit.serviceKey} session={session} onRerun={onRerun} />}
     </>
   );
 }
 
-function ItemEvidence({ item, session, onReview }: { item: CheckItem; session: CheckSession; onReview: (p: Partial<CheckItem['review']>) => void }) {
+function ItemEvidence({ item, session, onReview, onCorrect }: { item: CheckItem; session: CheckSession; onReview: (p: Partial<CheckItem['review']>) => void; onCorrect: (key: string, correction: FieldCorrection) => void }) {
   const { settings } = useApp();
   const twoCol = useMedia('(min-width: 1200px), (min-width: 1024px) and (orientation: landscape)');
   const [tab, setTab] = useState<'a' | 'b'>(item.a ? 'a' : 'b');
@@ -320,7 +337,7 @@ function ItemEvidence({ item, session, onReview }: { item: CheckItem; session: C
       )}
       <div className={`ev-cols ${show.length === 2 ? 'two' : ''}`} style={{ marginTop: 8 }}>
         {show.map((s) => (
-          <EvCard key={s} ev={item[s]!} title={s === 'a' ? '來源 A' : '待核書狀 B'} session={session} compact={!twoCol} />
+          <EvCard key={s} ev={item[s]!} title={s === 'a' ? '來源 A' : '待核書狀 B'} session={session} compact={!twoCol} onCorrect={onCorrect} />
         ))}
         {!sides.length && <div className="cell-sub">此項目沒有可顯示的原文證據（例如缺件或來源未提供）。</div>}
       </div>
@@ -355,7 +372,7 @@ function ItemEvidence({ item, session, onReview }: { item: CheckItem; session: C
   );
 }
 
-function EvCard({ ev, title, session, compact }: { ev: Evidence; title: string; session: CheckSession; compact: boolean }) {
+function EvCard({ ev, title, session, compact, onCorrect }: { ev: Evidence; title: string; session: CheckSession; compact: boolean; onCorrect: (key: string, correction: FieldCorrection) => void }) {
   const { settings } = useApp();
   const tabId = useId();
   const [view, setView] = useState(false);
@@ -384,42 +401,58 @@ function EvCard({ ev, title, session, compact }: { ev: Evidence; title: string; 
         {(!tabbed || !view) && <>
           <div className="val">{m(ev.normalized) || '—'}</div>
           <div className="raw">原文：{m(ev.raw) || '—'}</div>
+          {ev.correction?.applied && <div className="cell-sub">已由人工確認{ev.correction.applied.by ? `（${m(ev.correction.applied.by)}）` : ''}</div>}
           {ev.prov && <div className="loc">來源：{provLabel(ev.prov)}</div>}
           {ev.prov?.raw && ev.prov.raw !== ev.raw && <div className="raw">前後文：{m(ev.prov.raw)}</div>}
         </>}
         {!tabbed && doc && <button className="btn small" style={{ marginTop: 6 }} aria-expanded={view} onClick={() => setView(!view)}>{view ? '收合原文' : '查看原頁'}</button>}
         {view && doc && ev.prov && <DocViewer doc={doc} prov={ev.prov} />}
       </div>
+      {ev.correction && <CorrectionForm key={ev.correction.key} target={ev.correction} onCorrect={onCorrect} />}
     </div>
   );
 }
 
-function ServiceForm({ session, onRerun }: { session: CheckSession; onRerun: (s: CheckSession) => void }) {
-  const units = session.result!.units.filter((u) => u.items.some((i) => i.field === '利息起算日'));
-  const [draft, setDraft] = useState(session.service);
-  if (!units.length) return null;
+function CorrectionForm({ target, onCorrect }: { target: FieldCorrectionTarget; onCorrect: (key: string, correction: FieldCorrection) => void }) {
+  const [value, setValue] = useState('');
+  const [by, setBy] = useState('');
+  const [error, setError] = useState('');
+  return <details className="field-correction">
+    <summary>更正讀取結果</summary>
+    <form className="form-grid" onSubmit={(e) => {
+      e.preventDefault();
+      const next = value.trim().normalize('NFKC');
+      if (target.field === 'case' && findCaseNumbers(next).filter((c) => !c.isDocRef).length !== 1) {
+        setError('請輸入一個完整的年度、字別及案號。');
+        return;
+      }
+      if (!next || (target.field === 'id' && !/^[A-Z][1289][0-9*X○●O]{8}$/i.test(next))) {
+        setError(target.field === 'id' ? '請輸入 10 碼身分證字號，可沿用原件遮罩。' : '請輸入已在原件確認的內容。');
+        return;
+      }
+      onCorrect(target.key, { value: target.field === 'id' ? next.toUpperCase() : next, by: by.trim(), at: new Date().toISOString() });
+      setValue('');
+      setError('');
+    }}>
+      <label className="field"><span>人工確認為</span><input className="input" value={value} maxLength={160} onChange={(e) => setValue(e.target.value)} /></label>
+      <label className="field"><span>確認人（選填）</span><input className="input" value={by} maxLength={40} onChange={(e) => setBy(e.target.value)} /></label>
+      <div className="toolbar"><button type="submit" className="btn small primary">儲存更正並重算</button></div>
+      {error && <p role="alert" className="note bad">{error}</p>}
+    </form>
+  </details>;
+}
+
+function ServiceForm({ serviceKey, session, onRerun }: { serviceKey: string; session: CheckSession; onRerun: (s: CheckSession) => void }) {
+  const [v, set] = useState(session.service[serviceKey] ?? {});
   return (
-    <section className="panel" aria-labelledby="h-svc">
-      <div className="panel-head">
-        <h2 id="h-svc">送達資料（利息起算日）</h2>
-        <span className="hint">自動辨識不完整時請人工補充；確定證明書日期不是送達日</span>
-      </div>
+    <details className="panel-body">
+      <summary>補充這一案的送達日期</summary>
       <div className="panel-body">
-        {units.map((u) => {
-          const c = findCaseNumbers(u.subLabel ?? '')[0];
-          if (!c) return null;
-          const key = caseKey(c);
-          const v = draft[key] ?? {};
-          const set = (patch: object) => setDraft({ ...draft, [key]: { ...v, ...patch } });
-          return (
-            <div key={u.id} style={{ marginBottom: 10 }}>
-              <div style={{ fontWeight: 600, marginBottom: 6 }}>
-                {u.label}・{u.subLabel}
-              </div>
+        <p className="cell-sub">請依這一案的送達證書或法院確認資料填寫。</p>
               <div className="form-grid cols-3">
                 <label className="field">
                   <span>送達方式</span>
-                  <select className="input" value={v.method ?? ''} onChange={(e) => set({ method: (e.target.value || undefined) as ServiceMethod | undefined })}>
+                  <select className="input" value={v.method ?? ''} onChange={(e) => set({ ...v, method: (e.target.value || undefined) as ServiceMethod | undefined })}>
                     <option value="">（依送達證書自動辨識）</option>
                     {(Object.keys(SERVICE_METHOD_LABEL) as ServiceMethod[]).map((m) => (
                       <option key={m} value={m}>
@@ -430,28 +463,25 @@ function ServiceForm({ session, onRerun }: { session: CheckSession; onRerun: (s:
                 </label>
                 <label className="field">
                   <span>送達日／寄存日</span>
-                  <input className="input" type="date" value={v.serviceDate ?? ''} onChange={(e) => set({ serviceDate: e.target.value || undefined })} />
+                  <input className="input" type="date" value={v.serviceDate ?? ''} onChange={(e) => set({ ...v, serviceDate: e.target.value || undefined })} />
                 </label>
-                <label className="field">
+                {v.method === 'deposit' && <label className="field">
                   <span>實際領取日（寄存後，如有）</span>
-                  <input className="input" type="date" value={v.pickupDate ?? ''} onChange={(e) => set({ pickupDate: e.target.value || undefined })} />
-                </label>
+                  <input className="input" type="date" value={v.pickupDate ?? ''} onChange={(e) => set({ ...v, pickupDate: e.target.value || undefined })} />
+                </label>}
                 <label className="field">
                   <span>法院確認之送達生效日（如有）</span>
-                  <input className="input" type="date" value={v.courtConfirmedEffective ?? ''} onChange={(e) => set({ courtConfirmedEffective: e.target.value || undefined })} />
+                  <input className="input" type="date" value={v.courtConfirmedEffective ?? ''} onChange={(e) => set({ ...v, courtConfirmedEffective: e.target.value || undefined })} />
                 </label>
                 <label className="check">
-                  <input type="checkbox" checked={!!v.multipleDebtorsDiffer} onChange={(e) => set({ multipleDebtorsDiffer: e.target.checked })} />
+                  <input type="checkbox" checked={!!v.multipleDebtorsDiffer} onChange={(e) => set({ ...v, multipleDebtorsDiffer: e.target.checked })} />
                   多名債務人且送達日不同
                 </label>
               </div>
-            </div>
-          );
-        })}
-        <button className="btn primary" onClick={() => onRerun({ ...session, service: draft })}>
+        <button className="btn primary" onClick={() => onRerun({ ...session, service: { ...session.service, [serviceKey]: v } })}>
           套用並重新計算
         </button>
       </div>
-    </section>
+    </details>
   );
 }

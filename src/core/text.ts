@@ -1,4 +1,5 @@
-// 文字正規化工具：全半形、臺／台、空白。不做「模糊視為相同」的處理。
+// 文字正規化工具：全半形、臺／台、空白。
+import { CN_NUM_CHARS, parseChineseInt } from './amount';
 
 export function nfkc(s: string): string {
   return String(s ?? '').normalize('NFKC');
@@ -90,23 +91,44 @@ export function compareNames(a: string, b: string): NameCompare {
   return 'different';
 }
 
-/** 地址正規化：全半形、空白、郵遞區號、臺台；保留門牌樓層等差異 */
+const ADDRESS_NUM = new RegExp(`(?<![\\d${CN_NUM_CHARS}])(\\d+|[${CN_NUM_CHARS}]+)(鄰|段|巷|弄|號|樓|室)`, 'g');
+const ADDRESS_PARTS: Record<string, string> = { 鄰: '鄰號', 段: '路段', 巷: '巷號', 弄: '弄號', 號: '門牌', 樓: '樓層', 室: '房號' };
+
+/** 只處理行政地址位置有明確語義的數字。保留房號、附號與連字號的原有寫法。 */
 export function normAddress(s: string): string {
   return stripSpaces(s)
-    .replace(/^\d{3,6}/, '')
+    .replace(/^(?:\d{6}|\d{5}|\d{3})(?=[\p{Script=Han}]{1,3}[市縣])/u, '')
     .replace(/臺/g, '台')
-    .replace(/之(\d)/g, '之$1')
-    .replace(/-/g, '之')
-    .replace(/[,，、]/g, '');
+    .replace(/[,，、]/g, '')
+    .replace(ADDRESS_NUM, (raw, value: string, suffix: string) => {
+      if (suffix === '室') return raw;
+      if (/^\d+$/.test(value)) return `${suffix === '鄰' ? value.replace(/^0+(?=\d)/, '') : value}${suffix}`;
+      const parsed = parseChineseInt(value);
+      return parsed === null ? raw : `${parsed}${suffix}`;
+    });
 }
 
-export function compareAddress(a: string, b: string): { equal: boolean; diffAt?: number } {
+export function compareAddress(a: string, b: string, scan = false): {
+  equal: boolean;
+  state: 'exactMatch' | 'normalizedEquivalent' | 'suspectedOcrError' | 'confirmedMismatch' | 'insufficientEvidence';
+  diffAt?: number;
+  detail: string;
+} {
   const na = normAddress(a);
   const nb = normAddress(b);
-  if (na === nb) return { equal: true };
+  if (!na || !nb) return { equal: false, state: 'insufficientEvidence', detail: '尚未取得可比對的地址' };
+  if (na === nb) return a === b ? { equal: true, state: 'exactMatch', detail: '地址一致' }
+    : { equal: true, state: 'normalizedEquivalent', detail: '寫法不同，但地址相同（已統一郵遞區號、鄰號、國字數字或空白等格式）' };
   let i = 0;
   while (i < na.length && i < nb.length && na[i] === nb[i]) i++;
-  return { equal: false, diffAt: i };
+  const parts = (value: string) => new Map([...value.matchAll(/(\d+(?:[之-]\d+)?)(鄰|段|巷|弄|號|樓|室)/g)].map((m) => [m[2], m[1] + m[2]]));
+  const pa = parts(na);
+  const pb = parts(nb);
+  const differences = Object.entries(ADDRESS_PARTS).filter(([unit]) => pa.get(unit) !== pb.get(unit))
+    .map(([unit, label]) => `${label}（${pa.get(unit) ?? '未讀到'}／${pb.get(unit) ?? '未讀到'}）`);
+  const location = differences.length ? differences.join('、') : `行政區、路名或附號（自第 ${i + 1} 字有差異）`;
+  return scan ? { equal: false, state: 'suspectedOcrError', diffAt: i, detail: `請看原件確認${location}，掃描辨識可能有誤` }
+    : { equal: false, state: 'confirmedMismatch', diffAt: i, detail: `兩份文件的${location}不同` };
 }
 
 export function uid(prefix = 'id'): string {

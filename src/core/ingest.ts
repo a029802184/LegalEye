@@ -111,13 +111,13 @@ export async function parseOne(file: SourceFile, opts: IngestOptions): Promise<E
           pages = await ocrPdfPages(file.data, pages, {
             signal: opts.signal,
             lowMemory: opts.lowMemory,
-            onPage: (d, t) => opts.onProgress?.({ phase: 'ocr', done: d, total: t, label: `${file.name} OCR` }),
+            onPage: (d, t) => opts.onProgress?.({ phase: 'ocr', done: d, total: t, label: file.name }),
           });
           const failed = pages.filter((p) => p.ocrFailed).length;
-          base.warnings.push(`有 ${scan} 頁為掃描影像，已執行本機 OCR${failed ? `；其中 ${failed} 頁辨識失敗或信心過低` : ''}。OCR 結果需人工核對原頁。`);
+          base.warnings.push(`已在本機辨識 ${scan} 張掃描頁${failed ? `，其中 ${failed} 頁的文字需要看原件確認` : ''}。`);
           base.status = failed ? 'partial' : 'ok';
         } else if (scan) {
-          base.warnings.push(`有 ${scan} 頁沒有文字層（掃描影像），需執行 OCR 才能核對。`);
+          base.warnings.push(`有 ${scan} 頁為掃描圖片。啟用掃描文字辨識後可重新讀取。`);
           base.status = scan === pages.length ? 'needs-ocr' : 'partial';
         }
         if (pages.some((p) => p.rotationSuspect)) base.warnings.push('部分頁面為橫向或旋轉，請核對原頁影像。');

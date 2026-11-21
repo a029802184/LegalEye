@@ -97,6 +97,7 @@ export interface PdfPageSpec {
   lines: string[];
   /** true：只畫灰色方塊、不含文字層（模擬掃描） */
   scanned?: boolean;
+  raster?: { width: number; height: number; jpegHex: string };
 }
 
 export function buildPdf(pages: PdfPageSpec[]): Uint8Array {
@@ -108,7 +109,9 @@ export function buildPdf(pages: PdfPageSpec[]): Uint8Array {
     const pageId = 6 + i * 2;
     pageIds.push(pageId);
     let stream: string;
-    if (p.scanned) {
+    if (p.raster) {
+      stream = 'q 535 0 0 260 30 520 cm /Picture Do Q';
+    } else if (p.scanned) {
       stream = '0.85 g 60 420 475 360 re f 0.6 g 80 700 300 14 re f 80 670 380 14 re f 80 640 340 14 re f';
     } else {
       const lines = p.lines.map((ln, j) => `BT /F1 12 Tf 1 0 0 1 56 ${790 - j * 20} Tm <${ucs2Hex(ln)}> Tj ET`);
@@ -121,10 +124,18 @@ export function buildPdf(pages: PdfPageSpec[]): Uint8Array {
   objs[3] = '<< /Type /Font /Subtype /Type0 /BaseFont /MSung-Light /Encoding /UniCNS-UCS2-H /DescendantFonts [4 0 R] >>';
   objs[4] = '<< /Type /Font /Subtype /CIDFontType0 /BaseFont /MSung-Light /CIDSystemInfo << /Registry (Adobe) /Ordering (CNS1) /Supplement 0 >> /FontDescriptor 5 0 R /DW 1000 >>';
   objs[5] = '<< /Type /FontDescriptor /FontName /MSung-Light /Flags 6 /FontBBox [0 -200 1000 900] /ItalicAngle 0 /Ascent 880 /Descent -120 /CapHeight 880 /StemV 93 >>';
-  pages.forEach((_, i) => {
+  let nextImage = 6 + pages.length * 2;
+  pages.forEach((spec, i) => {
     const pageId = 6 + i * 2;
     const contentId = pageId + 1;
-    objs[pageId] = `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R >> >> /Contents ${contentId} 0 R >>`;
+    let xobject = '';
+    if (spec.raster) {
+      const { width, height, jpegHex } = spec.raster;
+      const image = nextImage++;
+      objs[image] = `<< /Type /XObject /Subtype /Image /Width ${width} /Height ${height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter [/ASCIIHexDecode /DCTDecode] /Length ${jpegHex.length + 1} >>\nstream\n${jpegHex}>\nendstream`;
+      xobject = `/XObject << /Picture ${image} 0 R >>`;
+    }
+    objs[pageId] = `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R >> ${xobject} >> /Contents ${contentId} 0 R >>`;
     const s = contents[i];
     objs[contentId] = `<< /Length ${s.length} >>\nstream\n${s}\nendstream`;
   });

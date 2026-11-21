@@ -19,6 +19,7 @@ const RULES: Rule[] = [
   { role: 'notice-letter', kinds: ['docx', 'txt'], title: /通知函|通\s*知\s*書/, body: /執行命令|法院/, neg: /聲請狀/, fileHint: /通知函/ },
   { role: 'finality-cert', kinds: ['pdf', 'txt'], title: /確定證明書/, fileHint: /確定證明/ },
   { role: 'service-proof', kinds: ['pdf', 'txt'], title: /送達證書/, fileHint: /送達/ },
+  { role: 'tax-record', kinds: ['pdf', 'txt', 'docx'], title: /國稅局.{0,14}(?:查稅|財產|所得)|(?:財產|所得)資料清單|查稅資料/, body: /財產|所得|統一編號/, fileHint: /查稅|財產所得/ },
   { role: 'payment-order', kinds: ['pdf', 'txt'], title: /^.{0,40}支付命令/, body: /債務人應向債權人|於本命令送達後二十日/, neg: /聲請狀/, fileHint: /支付命令/ },
   { role: 'court-letter', kinds: ['pdf', 'txt'], title: /民事庭|法院.{0,6}函/, body: /陳報|受文者|開庭|到庭/, neg: /執行命令|陳報狀/, fileHint: /庭函/ },
   { role: 'court-notice', kinds: ['pdf', 'txt'], title: /執行命令|法院.{0,10}(函|命令)/, body: /受文者|發文字號|執行/, neg: /陳報狀|聲請狀/, fileHint: /執行命令|公文/ },

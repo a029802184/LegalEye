@@ -8,9 +8,11 @@ import { ROLE_LABEL, type DocRole, type ExtractedDoc, type FlowId, type FlowResu
 import { pageRole } from '../core/classify';
 import { FlowCards } from '../ui/FlowCards';
 import { Results } from './check/Results';
+import { DocViewer } from './check/DocViewer';
+import { provAt } from '../flows/common';
 
 type UploadProgress = Omit<IngestProgress, 'phase'> & { phase: IngestProgress['phase'] | 'read' };
-const PHASE: Record<UploadProgress['phase'], string> = { read: '讀取檔案', unzip: '解壓縮', parse: '解析文件', ocr: '本機 OCR', classify: '分類', done: '完成' };
+const PHASE: Record<UploadProgress['phase'], string> = { read: '讀取檔案', unzip: '解壓縮', parse: '讀取文件', ocr: '正在讀取掃描文字', classify: '分類', done: '完成' };
 const ROLES: Record<FlowId, DocRole[]> = {
   A: ['court-notice', 'notice-letter'],
   B: ['enforcement-petition', 'payment-order', 'finality-cert', 'service-proof'],
@@ -18,21 +20,28 @@ const ROLES: Record<FlowId, DocRole[]> = {
   D: ['court-letter', 'civil-report', 'debt-table', 'attachment'],
 };
 const STEPS = ['上傳文件', '檔案辨識與確認', '開始核對與查看結果'];
+const ENFORCEMENT_STEPS = [
+  { label: '上傳文件', target: 'h-upload' },
+  { label: '確認案件配對', target: 'h-files' },
+  { label: '當事人與金額', target: 'case-review' },
+  { label: '利息起算日', target: 'interest-review' },
+  { label: '檢視與下載報告', target: 'h-report' },
+];
 const DOC_STATUS: Record<ExtractedDoc['status'], string> = {
-  ok: '已讀取', partial: '部分讀取', 'needs-ocr': '需 OCR（掃描影像）', error: '讀取失敗', unsupported: '不支援',
+  ok: '已讀取', partial: '部分文字待確認', 'needs-ocr': '掃描文字尚未辨識', error: '讀取失敗', unsupported: '不支援',
 };
 
 /** 重新執行時保留人工覆核紀錄（依檔案＋單位＋欄位＋序號對應） */
 function mergeReviews(prev: FlowResult | undefined, next: FlowResult): FlowResult {
   if (!prev) return next;
-  const key = (u: FlowResult['units'][number], field: string, n: number) => `${u.docs[0]?.fileId}|${u.subLabel}|${field}|${n}`;
-  const map = new Map<string, FlowResult['units'][number]['items'][number]['review']>();
+  const key = (u: FlowResult['units'][number], field: string, n: number) => `${u.pairKey || u.serviceKey || u.docs[0]?.fileId}|${u.subLabel}|${field}|${n}`;
+  const map = new Map<string, FlowResult['units'][number]['items'][number]>();
   for (const u of prev.units) {
     const cnt = new Map<string, number>();
     for (const i of u.items) {
       const n = cnt.get(i.field) ?? 0;
       cnt.set(i.field, n + 1);
-      if (i.review.state !== 'pending' || i.review.note) map.set(key(u, i.field, n), i.review);
+      map.set(key(u, i.field, n), i);
     }
   }
   for (const u of next.units) {
@@ -40,8 +49,11 @@ function mergeReviews(prev: FlowResult | undefined, next: FlowResult): FlowResul
     for (const i of u.items) {
       const n = cnt.get(i.field) ?? 0;
       cnt.set(i.field, n + 1);
-      const r = map.get(key(u, i.field, n));
-      if (r) i.review = { ...r };
+      const previous = map.get(key(u, i.field, n));
+      if (!previous) continue;
+      i.id = previous.id;
+      const source = (ev: typeof i.a) => [ev?.prov?.fileId, ev?.prov?.page, ev?.normalized, ev?.correction?.applied?.at].join('|');
+      if (previous.status === i.status && source(previous.a) === source(i.a) && source(previous.b) === source(i.b)) i.review = { ...previous.review };
     }
   }
   return next;
@@ -58,7 +70,6 @@ function FlowChooser() {
       <PageHead title="法律文件核對" desc="選擇文件類型，確認來源文件後執行核對。" />
       <h2 className="sr-only">選擇核對類型</h2>
       <FlowCards />
-      <p><a className="text-action" href="#/check/quick">快速文字校對</a> <span className="muted">貼上書狀文字或匯入 TXT／DOCX，與自行輸入的案件資料比對。</span></p>
     </div>
   );
 }
@@ -73,6 +84,8 @@ function FlowWorkspace({ flow }: { flow: FlowId }) {
   const [ocr, setOcr] = useState(true);
   const [ocrReady, setOcrReady] = useState<boolean | null>(null);
   const [showFiles, setShowFiles] = useState(!session?.result);
+  const [scanPreview, setScanPreview] = useState<string>();
+  const [enforcementStep, setEnforcementStep] = useState(3);
   const abort = useRef<AbortController | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const filesHeading = useRef<HTMLHeadingElement>(null);
@@ -98,7 +111,7 @@ function FlowWorkspace({ flow }: { flow: FlowId }) {
   useEffect(() => () => abort.current?.abort(), []);
 
   const rerun = (s: CheckSession): CheckSession => {
-    const result = mergeReviews(s.result, runFlow(flow, s.docs, { settings, service: s.service, manualPairs: s.manualPairs }));
+    const result = mergeReviews(s.result, runFlow(flow, s.docs, { settings, service: s.service, manualPairs: s.manualPairs, corrections: s.corrections }));
     return { ...s, result };
   };
 
@@ -174,6 +187,7 @@ function FlowWorkspace({ flow }: { flow: FlowId }) {
     const identified = found.some((d) => role === 'attachment' ? d.status !== 'error' : !!d.fullText.trim()) || mergedRoles.includes(role);
     return { role, identified, status: identified ? '已辨識' : found.length ? '無法讀取' : '未辨識' };
   });
+  const displayedStep = flow === 'B' && step === 3 ? enforcementStep : step;
   const packing = flow === 'D' ? '將法院庭函、陳報狀、Excel 債務明細及附件放入同一個 ZIP。'
     : flow === 'C' ? '將同一批聲請狀、欠費明細及戶籍謄本放入同一個 ZIP。'
     : '可上傳包含所需文件的 ZIP，或一次選取多個檔案。';
@@ -192,10 +206,15 @@ function FlowWorkspace({ flow }: { flow: FlowId }) {
         }
       />
       <ol className="workflow-steps" aria-label="核對進度">
-        {STEPS.map((label, i) => (
-          <li key={label} aria-current={step === i + 1 ? 'step' : undefined} className={step > i + 1 ? 'complete' : undefined}>
-            <span className="step-number" aria-hidden="true">{step > i + 1 ? <Icon name="check" size={15} /> : i + 1}</span>
-            {label}
+        {(flow === 'B' ? ENFORCEMENT_STEPS : STEPS.map((label) => ({ label, target: '' }))).map(({ label, target }, i) => (
+          <li key={label} aria-current={displayedStep === i + 1 ? 'step' : undefined}>
+            <span className="step-number" aria-hidden="true">{i + 1}</span>
+            {target ? <button type="button" disabled={i > 0 && !session || i > 1 && !session?.result} onClick={() => {
+              setEnforcementStep(i + 1);
+              if (i === 1) setShowFiles(true);
+              const section = i === 1 && session?.result ? 'case-review' : target;
+              (document.getElementById(section) ?? document.getElementById('case-review'))?.scrollIntoView({ block: 'start' });
+            }}>{label}</button> : label}
           </li>
         ))}
       </ol>
@@ -245,17 +264,18 @@ function FlowWorkspace({ flow }: { flow: FlowId }) {
             <div className="upload-options">
               <label className="check">
                 <input type="checkbox" checked={ocr} disabled={!!progress} onChange={(e) => setOcr(e.target.checked)} />
-                掃描 PDF 自動執行本機 OCR（繁體中文，較慢）
+                自動辨識掃描文件中的文字
               </label>
               <span className="cell-sub">
-                {ocrReady === null ? '檢查 OCR 元件…' : ocrReady ? 'OCR 元件已就緒（離線）' : 'OCR 語言資料未安裝：掃描頁將標示「需 OCR」'}
+                如果 PDF 是掃描圖片，系統會嘗試讀取姓名、身分證字號與地址。可能多花一些時間，資料只在這台裝置處理。已有文字的頁面會直接讀取。
               </span>
+              <span className="cell-sub">{ocrReady === null ? '正在準備掃描文字辨識…' : ocrReady ? '掃描文字辨識已準備好，可在本機處理檔案。' : '掃描辨識工具目前無法使用，請查看原件或改用有文字的 PDF。'}</span>
             </div>
             {lowMem && ocr && <p className="cell-sub">行動裝置會逐頁辨識。大量掃描檔建議使用桌機。</p>}
             {progress && (
               <div style={{ marginTop: 10 }} role="status" aria-live="polite">
                 <div className="toolbar" style={{ justifyContent: 'space-between' }}>
-                  <span>{PHASE[progress.phase]}：{progress.label}（{progress.done}/{progress.total}）</span>
+                  <span>{PHASE[progress.phase]}：{progress.label}（{progress.phase === 'ocr' ? `第 ${progress.done}／${progress.total} 掃描頁` : `${progress.done}/${progress.total}`}）</span>
                   <button className="btn small danger" onClick={() => abort.current?.abort()}>取消</button>
                 </div>
                 <div className="progress" aria-hidden="true"><div style={{ width: `${pct}%` }} /></div>
@@ -312,6 +332,11 @@ function FlowWorkspace({ flow }: { flow: FlowId }) {
                           ! {w}
                         </div>
                       ))}
+                      {d.file.kind === 'pdf' && d.pages.some((p) => p.method === 'ocr' || p.needsOcr) && (
+                        <><button className="btn small" onClick={() => setScanPreview(scanPreview === d.file.id ? undefined : d.file.id)} aria-expanded={scanPreview === d.file.id}>查看掃描原頁</button>
+                          {scanPreview === d.file.id && <DocViewer doc={d} prov={provAt(d, (d.pages.find((p) => p.ocrFailed || p.needsOcr) ?? d.pages.find((p) => p.method === 'ocr')!).page, 0, '')} />}
+                        </>
+                      )}
                     </div>
                     <label className="field">
                       <span className="sr-only">{d.file.name} 的文件角色</span>

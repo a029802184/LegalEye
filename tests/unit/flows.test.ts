@@ -4,6 +4,7 @@ import { ingest } from '../../src/core/ingest';
 import { DEFAULT_SETTINGS } from '../../src/core/rules';
 import { unitStatus, type CheckItem, type FlowId, type FlowResult } from '../../src/core/types';
 import { FLOWS, runFlow } from '../../src/flows';
+import { runFlowC } from '../../src/flows/flowC';
 import { demoA, demoB, demoC, demoD } from '../fixtures/datasets';
 import { readTestPdf } from '../fixtures/builders';
 
@@ -71,7 +72,7 @@ describe('流程 B：強制執行聲請狀', () => {
   it('人工改為一般送達時重新計算；不以確定證明書日期當送達日', async () => {
     const files = await demoB();
     const r = await ingest(files, { allowedRoles: FLOWS[1].roles, pdfExtractor });
-    const key = '114-司促-8888';
+    const key = runFlow('B', r.docs, { settings }).units[0].serviceKey!;
     const res = runFlow('B', r.docs, { settings, service: { [key]: { method: 'personal', serviceDate: '2025-07-01' } } });
     const i = res.units[0].items.find((x) => x.field === '利息起算日')!;
     expect(i.status).toBe('mismatch'); // 書狀寫 7/12，一般送達應為 7/2
@@ -81,6 +82,16 @@ describe('流程 B：強制執行聲請狀', () => {
 });
 
 describe('流程 C：支付命令批次', () => {
+  it('重新配對第 9 位只影響對應的核對單位', async () => {
+    const { docs } = await ingest(await demoC(), { allowedRoles: FLOWS[2].roles, pdfExtractor });
+    const a = runFlowC(docs, { settings });
+    const pairKey = a.units[8].pairKey!;
+    const person = a.extra.persons.find((p) => !a.units[8].docs.some((d) => d.fileId === p.doc.file.id && d.pages?.includes(p.page)))!;
+    const b = runFlowC(docs, { settings, manualPairs: { [pairKey]: { person: person.key } } });
+    expect(b.units[8].docs.find((d) => d.role === 'household-register')?.pages).toEqual([person.page]);
+    const snapshot = (r: FlowResult) => r.units.filter((_, i) => i !== 8).map((u) => ({ id: u.id, docs: u.docs, fields: u.items.map((i) => [i.field, i.status, i.reason]) }));
+    expect(snapshot(b)).toEqual(snapshot(a));
+  });
   it('11 人、10 頁戶謄、缺件、同名、本期應繳、金額待釐清、掃描失敗', async () => {
     const res = await run('C', await demoC());
     expect(res.units).toHaveLength(11);
@@ -93,7 +104,8 @@ describe('流程 C：支付命令批次', () => {
     expect(wangs).toHaveLength(2);
     for (const w of wangs) expect(w.items.find((i) => i.field.startsWith('身分證'))!.status).toBe('match');
     // 劉建宏缺戶籍
-    expect(find(res, '劉建宏', '姓名')!.status).toBe('missing');
+    expect(find(res, '劉建宏', '姓名')!.status).toBe('needs-review');
+    expect(find(res, '劉建宏', '姓名')!.reason).toMatch(/確認配對/);
     // 黃怡君只有本期應繳 → 不比對
     expect(find(res, '黃怡君', '聲請本金')!.reason).toMatch(/本期應繳/);
     // 吳宗翰有已繳款 → 金額待釐清

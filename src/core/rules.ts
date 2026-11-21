@@ -4,7 +4,7 @@
 import { DEFAULT_COURT_ALIASES } from './court';
 import type { FlowId } from './types';
 
-export const RULESET_VERSION = 'LE-RULES-2026.11.1';
+export const RULESET_VERSION = 'LE-RULES-2026.11.3';
 export const SETTINGS_SCHEMA = 1;
 
 export interface CheckDef {

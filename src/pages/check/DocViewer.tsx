@@ -98,7 +98,7 @@ function PdfView({ doc, prov }: { doc: ExtractedDoc; prov: Provenance }) {
           <button className="btn small" onClick={() => setPage(prov.page!)}>回到差異頁</button>
         )}
         <button className="btn small" aria-pressed={showText} onClick={() => setShowText(!showText)}>
-          {showText ? '隱藏' : '顯示'}抽取文字
+          {showText ? '隱藏' : '顯示'}辨識出的文字
         </button>
         {busy && <span className="cell-sub">繪製中…</span>}
       </div>
@@ -106,16 +106,52 @@ function PdfView({ doc, prov }: { doc: ExtractedDoc; prov: Provenance }) {
       <div className="viewer-canvas" ref={box}>
         <canvas ref={canvas} aria-label={`${doc.file.name} 第 ${page} 頁影像`} />
       </div>
+      {pt && (pt.method === 'ocr' || pt.needsOcr) && <ScanReview key={page} doc={doc} page={page} prov={page === prov.page ? prov : undefined} />}
       {showText && pt && (
         <div className="viewer-text">
           <div className="cell-sub">
-            {pt.method === 'ocr' ? `OCR 文字（信心 ${Math.round(pt.confidence * 100)}%，請對照上方原頁）` : pt.needsOcr ? '此頁無文字層（掃描影像）' : 'PDF 文字層'}
+            {pt.method === 'ocr' ? '電腦從掃描圖片讀出的文字，請對照上方原頁' : pt.needsOcr ? '這頁是掃描圖片，目前沒有可讀的文字' : 'PDF 內可選取的文字'}
           </div>
           {page === prov.page ? <Highlight text={pt.text} needle={prov.raw} /> : pt.text}
+          {pt.scan && <details><summary>辨識原文及其他候選</summary><pre>{pt.scan.raw || '未讀到文字'}</pre>{pt.scan.alternate && <pre>{pt.scan.alternate}</pre>}</details>}
         </div>
       )}
     </div>
   );
+}
+
+function ScanReview({ doc, page, prov }: { doc: ExtractedDoc; page: number; prov?: Provenance }) {
+  const crop = useRef<HTMLCanvasElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<string>();
+  const region = prov?.region;
+  useEffect(() => {
+    if (!region) return;
+    let active = true;
+    import('../../core/ocr').then((mod) => mod.renderScanRegion(doc.file.data, page, region, isLowMemoryDevice())).then((image) => {
+      const canvas = crop.current;
+      if (active && canvas) {
+        canvas.width = image.width;
+        canvas.height = image.height;
+        canvas.getContext('2d')?.drawImage(image, 0, 0);
+      }
+      image.width = image.height = 0;
+    }).catch(() => { if (active) setResult('無法顯示局部影像，請參考上方原頁。'); });
+    return () => { active = false; };
+  }, [doc.file.data, page, region]);
+  return <div className="viewer-text">
+    {region && <canvas ref={crop} className="field-crop" aria-label="欄位原圖裁切" />}
+    <button className="btn small" disabled={busy} onClick={async () => {
+      setBusy(true);
+      setResult(undefined);
+      try {
+        const { retryScan } = await import('../../core/ocr');
+        setResult(await retryScan(doc.file.data, page, region, isLowMemoryDevice()) || '這次仍未讀出文字，請看原件。');
+      } catch { setResult('無法重新辨識，請查看原件。'); }
+      finally { setBusy(false); }
+    }}>{busy ? '正在重新辨識…' : region ? '重新辨識此欄區域' : '重新辨識這一頁'}</button>
+    {result !== undefined && <><p>重新辨識的候選文字（請對照原件後再更正）</p><pre aria-live="polite">{result}</pre></>}
+  </div>;
 }
 
 function DocxView({ doc, prov }: { doc: ExtractedDoc; prov: Provenance }) {
