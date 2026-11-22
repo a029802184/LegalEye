@@ -960,8 +960,21 @@ table.data tr.selected td {
 .upload-guide p { margin: 7px 0 0; font-size: var(--type-meta); }
 .upload-controls { min-width: 0; overflow-wrap: anywhere; }
 .upload-options { margin-top: 5px; }
+.upload-options h3 { margin: 0 0 4px; font-size: var(--type-table); }
 .upload-options .check { font-size: var(--type-table); }
 .upload-options input { flex: none; margin-left: 0; accent-color: var(--blue); }
+.chrome-text { min-width: 0; }
+.chrome-text .form-grid > * { min-width: 0; }
+.chrome-text .chrome-wide { grid-column: 1 / -1; }
+.chrome-text select, .chrome-text textarea, .chrome-text input[type=file] { max-width: 100%; }
+.chrome-text textarea { resize: vertical; font-size: max(16px, var(--type-table)); }
+.scan-steps { padding-inline-start: 24px; margin-block: 0 8px; }
+.scan-steps li + li { margin-top: 4px; }
+.chrome-unit { border-bottom: 1px solid var(--line); }
+.chrome-source { overflow-wrap: anywhere; margin-top: 6px; }
+.chrome-source summary { cursor: pointer; padding-block: 8px; }
+.source-candidates { padding-inline-start: 18px; overflow-wrap: anywhere; }
+.source-candidates li + li { margin-top: 6px; }
 .role-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr)); list-style: none; margin: 0; padding: 0; gap: 6px 12px; }
 .role-summary li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 9px; font-size: var(--type-table); background: var(--surface-2); border: 1px solid var(--line); border-radius: 4px; }
 .check-next { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 15px; padding-block: 8px; border-block: 1px solid var(--line); }

@@ -4,6 +4,7 @@
 
 import { openPdf, renderPdfPage } from './pdf';
 import type { PageRegion, PageText } from './types';
+import { gainsHouseholdFields, householdScanFields } from './scanFields';
 
 function assetUrl(p: string): string {
   return new URL(p, document.baseURI).href;
@@ -145,7 +146,9 @@ export async function ocrPdfPages(
       let selected = res.data;
       let alternate: string | undefined;
       let left = 0, top = 0;
-      if (!opts.signal?.aborted && ((selected.confidence ?? 0) < 55 || cleanOcr(raw).length < 8)) {
+      const fields = householdScanFields(cleanOcr(raw));
+      const incompleteHousehold = fields && (!fields.name || !fields.id || !fields.address);
+      if (!opts.signal?.aborted && ((selected.confidence ?? 0) < 55 || cleanOcr(raw).length < 8 || incompleteHousehold)) {
         const frame = cropContent(canvas);
         try {
           enhance(frame.canvas);
@@ -154,7 +157,7 @@ export async function ocrPdfPages(
           const contrast = (await worker.recognize(frame.canvas)).data;
           await worker.setParameters({ tessedit_pageseg_mode: PSM.AUTO });
           if (cleanOcr(contrast.text) !== cleanOcr(raw)) alternate = contrast.text;
-          if (!raw.trim() && contrast.text.trim()) {
+          if ((!raw.trim() && contrast.text.trim()) || gainsHouseholdFields(cleanOcr(raw), cleanOcr(contrast.text))) {
             selected = contrast;
             ({ left, top } = frame);
           }

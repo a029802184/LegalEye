@@ -111,7 +111,7 @@ export function correctable(ctx: FlowContext, original: Evidence, unit: string, 
   const applied = ctx.corrections?.[key];
   return { ...original, normalized: applied?.value ?? original.normalized,
     prov: applied ? { ...p, method: 'manual', confidence: 1 } : p,
-    correction: { key, field, original: original.normalized, applied },
+    correction: { key, field, original: original.normalized, originalProv: p, applied },
   };
 }
 
@@ -137,7 +137,7 @@ export function item(
     };
   }
   // OCR 低信心的證據不能直接判定一致或不一致
-  const uncertainScan = [extra.a?.prov, extra.b?.prov].some((p) => p?.method === 'ocr' && (p.confidence < 0.6 || status === 'mismatch'));
+  const uncertainScan = [extra.a?.prov, extra.b?.prov].some((p) => p?.method === 'chrome-pasted' || (p?.method === 'ocr' && (p.confidence < 0.6 || status === 'mismatch')));
   let s = status;
   let r = reason;
   if (uncertainScan && (status === 'match' || status === 'mismatch')) {

@@ -137,7 +137,7 @@ export function runFlowD(docs: ExtractedDoc[], ctx: FlowContext): FlowResult {
       excelTotal = { cents: t.sumOfRows, prov: xlsxProv(table, t.sheet!, `${indexToCol(t.cols.balance!)}*`, '各列加總') };
       items.push(item(ctx, 'D.excel', '總額', 'needs-review', 'medium', `表上找不到「合計／總計」列，以各列加總 ${centsToString(t.sumOfRows)} 作為比對基準`));
     }
-    units.push({ id: uid('u'), label: '債務明細表驗算', subLabel: `${table.file.path}${t.sheet ? `・${t.sheet}` : ''}`, docs: [{ role: 'debt-table', fileId: table.file.id }], items });
+    units.push({ id: `d:${table.file.id}:table`, label: '債務明細表驗算', subLabel: `${table.file.path}${t.sheet ? `・${t.sheet}` : ''}`, docs: [{ role: 'debt-table', fileId: table.file.id }], items });
   }
 
   // 2. 陳報金額
@@ -177,7 +177,7 @@ export function runFlowD(docs: ExtractedDoc[], ctx: FlowContext): FlowResult {
         }
       }
     } else items.push(item(ctx, 'D.amount', '陳報金額', 'missing', 'high', '沒有可用的 Excel 總額（缺檔、公式無快取或表頭無法辨識），金額未核對'));
-    units.push({ id: uid('u'), label: '陳報金額', subLabel: report.file.path, docs: [{ role: 'civil-report', fileId: report.file.id }, ...(table ? [{ role: 'debt-table' as const, fileId: table.file.id }] : [])], items });
+    units.push({ id: `d:${report.file.id}:amount`, label: '陳報金額', subLabel: report.file.path, docs: [{ role: 'civil-report', fileId: report.file.id }, ...(table ? [{ role: 'debt-table' as const, fileId: table.file.id }] : [])], items });
   }
 
   // 3–4. 案件資訊與開庭
@@ -217,7 +217,7 @@ export function runFlowD(docs: ExtractedDoc[], ctx: FlowContext): FlowResult {
       else if (!/(開庭|期日|到庭)/.test(rt)) items.push(item(ctx, 'D.hearing', '開庭日期', 'not-applicable', 'info', `庭函記載期日 ${fmtBoth(ld.value)}；陳報狀未提及期日`));
       else items.push(item(ctx, 'D.hearing', '開庭日期', rd ? 'match' : 'mismatch', 'high', rd ? '期日一致' : '陳報狀所載期日與庭函不同', { a: ev('庭函', ld.raw, fmtBoth(ld.value)) }));
     } else items.push(item(ctx, 'D.hearing', '開庭日期', 'not-applicable', 'info', /陳報/.test(lt) ? '庭函為限期陳報，未記載開庭期日，不需比對' : '庭函未記載開庭期日'));
-    units.push({ id: uid('u'), label: '案件資訊', subLabel: '庭函 ↔ 陳報狀', docs: [{ role: 'court-letter', fileId: letter.file.id }, { role: 'civil-report', fileId: report.file.id }], items });
+    units.push({ id: `d:${report.file.id}:case`, label: '案件資訊', subLabel: '庭函 ↔ 陳報狀', docs: [{ role: 'court-letter', fileId: letter.file.id }, { role: 'civil-report', fileId: report.file.id }], items });
   }
 
   // 5. 附件
@@ -313,5 +313,5 @@ function checkAttachments(report: ExtractedDoc, attachments: ExtractedDoc[], ctx
   }
   for (const t of pdfTitles) if (!usedPdf.has(t)) items.push(item(ctx, 'D.attach', `${t.label ?? ''} 未被引用`, 'needs-review', 'medium', `附件 PDF 含「${t.label} ${t.name}」，但陳報狀未提及`, { a: ev('附件 PDF', t.name, t.name, t.prov) }));
   for (const z of zipFiles) if (!usedZip.has(z)) items.push(item(ctx, 'D.attach', '實際附上但未提及', 'needs-review', 'low', `ZIP 中的 ${z.prov?.path} 未被陳報狀引用`, { a: ev('ZIP 檔案', z.name, z.name, z.prov) }));
-  return { id: uid('u'), label: '附件核對', subLabel: `書狀引用 ${refs.length} 項・附件 PDF 章節 ${pdfTitles.length}・其他檔案 ${zipFiles.length}`, docs: [{ role: 'civil-report', fileId: report.file.id }, ...attachments.map((a) => ({ role: 'attachment' as const, fileId: a.file.id }))], items };
+  return { id: `d:${report.file.id}:attachments`, label: '附件核對', subLabel: `書狀引用 ${refs.length} 項・附件 PDF 章節 ${pdfTitles.length}・其他檔案 ${zipFiles.length}`, docs: [{ role: 'civil-report', fileId: report.file.id }, ...attachments.map((a) => ({ role: 'attachment' as const, fileId: a.file.id }))], items };
 }

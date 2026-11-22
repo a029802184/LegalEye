@@ -8,7 +8,7 @@ const LETTER_CODE: Record<string, number> = {
 
 export const ID_RE = /[A-Z][1289]\d{8}/g;
 /** 遮罩寫法，例如 A12345****、A1****6789、A123***789 */
-export const MASKED_ID_RE = /[A-Z][1289O*＊Ｏ○●Xx]?[\d*＊Ｏ○●Xx]{7,8}/g;
+export const MASKED_ID_RE = /[A-Z][1289O*＊Ｏ○●Xx]?[\d*＊OＯ○●Xx]{7,8}/g;
 
 export function validateTwId(id: string): boolean {
   const s = id.normalize('NFKC').toUpperCase().trim();
@@ -21,7 +21,7 @@ export function validateTwId(id: string): boolean {
 }
 
 export function isMasked(id: string): boolean {
-  return /[*＊Ｏ○●Xx]/.test(id.slice(1));
+  return /[*＊OＯ○●Xx]/.test(id.slice(1));
 }
 
 export function maskId(id: string): string {
@@ -41,8 +41,8 @@ export function compareIds(a: string, b: string): 'full' | 'partial' | 'mismatch
   const masked = isMasked(x) || isMasked(y);
   let visible = 0;
   for (let i = 0; i < x.length; i++) {
-    const mx = /[*＊Ｏ○●X]/.test(x[i]) && i > 0;
-    const my = /[*＊Ｏ○●X]/.test(y[i]) && i > 0;
+    const mx = /[*＊OＯ○●X]/.test(x[i]) && i > 0;
+    const my = /[*＊OＯ○●X]/.test(y[i]) && i > 0;
     if (mx || my) continue;
     if (x[i] !== y[i]) return 'mismatch';
     visible++;

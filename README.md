@@ -66,6 +66,10 @@ legal/
 
 ## 文件
 
+- [V4 掃描文件操作說明](docs/ocr-user-guide-zh-TW.md)
+- [Chrome PDF 本機辨識可行性](docs/chrome-ocr-feasibility.md)
+- [V4 維護交接](docs/maintainer-guide.md)
+- [V4 與 V3 回歸驗收](docs/V4-驗收.md)
 - [docs/使用手冊.md](docs/使用手冊.md)：給法務同事（網站內「使用說明」頁內容相同）
 - [docs/技術維護手冊.md](docs/技術維護手冊.md)：安裝、建置、部署、更新、資料遷移、規則維護
 - [docs/測試報告.md](docs/測試報告.md)：測試範圍、結果與未完成項目

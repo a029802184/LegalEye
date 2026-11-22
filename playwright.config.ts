@@ -17,8 +17,6 @@ export default defineConfig({
     acceptDownloads: true,
     locale: 'zh-TW',
     timezoneId: 'Asia/Taipei',
-    // 網站的 CSP 禁止 eval；Playwright 的 waitForFunction 需要 eval，因此只在測試中略過 CSP
-    bypassCSP: true,
   },
   webServer: {
     command: 'npm run preview',

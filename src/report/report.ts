@@ -56,7 +56,8 @@ export function buildHtmlReport(res: FlowResult, docs: ExtractedDoc[], opt: Repo
     const e = i[side];
     if (!e) return '<span class="mut">—</span>';
     const correction = e.correction?.applied;
-    return `<div><b>${escapeHtml(e.label)}</b>：${m(e.normalized)}</div><div class="mut">原文：${m(e.raw)}</div>${correction ? `<div>電腦讀取：${m(e.correction!.original) || '未讀到'}</div><div>已由人工確認：${m(correction.value)}${correction.by ? `（${m(correction.by)}）` : ''} · ${m(correction.at)}</div>` : ''}${e.prov ? `<div class="mut">來源：${m(provLabel(e.prov))}</div>` : ''}`;
+    const candidates = e.candidates?.map(({ value, prov }) => `<li>${m(value)}（${m(provLabel(prov))}）</li>`).join('');
+    return `<div><b>${escapeHtml(e.label)}</b>：${m(e.normalized)}</div><div class="mut">原文：${m(e.raw)}</div>${correction ? `<div>電腦讀取：${m(e.correction!.original) || '未讀到'}</div><div>已由人工確認：${m(correction.value)}${correction.by ? `（${m(correction.by)}）` : ''} · ${m(correction.at)}</div>` : ''}${e.prov ? `<div class="mut">來源：${m(provLabel(e.prov))}</div>` : ''}${candidates ? `<div class="mut">欄位讀取結果</div><ul>${candidates}</ul>` : ''}`;
   };
   const units = res.units
     .map((u, ui) => {
@@ -66,7 +67,8 @@ export function buildHtmlReport(res: FlowResult, docs: ExtractedDoc[], opt: Repo
           (i) => `<tr class="s-${i.status}"><td>${escapeHtml(i.field)}</td><td><span class="tag t-${i.status}">${STATUS_LABEL[i.status]}</span><div class="mut">優先：${SEVERITY_LABEL[i.severity]}</div></td><td>${cell(i, 'a')}</td><td>${cell(i, 'b')}</td><td>${m(i.reason)}${i.calc ? `<pre>${m(i.calc)}</pre>` : ''}${i.basis?.length ? `<div class="mut">依據：${i.basis.map(escapeHtml).join('<br>')}</div>` : ''}</td><td>${REVIEW_LABEL[i.review.state]}${i.review.note ? `<div>${m(i.review.note)}</div>` : ''}${i.review.at ? `<div class="mut">${escapeHtml(i.review.at)}</div>` : ''}</td></tr>`,
         )
         .join('');
-      return `<section class="unit"><h3>${ui + 1}. ${m(u.label)} <span class="tag u-${us}">${UNIT_STATUS_LABEL[us]}</span></h3>${u.subLabel ? `<div class="mut">${m(u.subLabel)}</div>` : ''}${u.match ? `<div class="mut">配對：${u.match.evidence.map(m).join('；')}${u.match.needsManual ? '（需人工確認）' : ''}</div>` : ''}<table><thead><tr><th>欄位</th><th>狀態</th><th>來源 A</th><th>待核書狀 B</th><th>原因／計算</th><th>人工覆核</th></tr></thead><tbody>${rows || '<tr><td colspan="6">無檢查項目</td></tr>'}</tbody></table></section>`;
+      const pasted = u.chromeSources?.map((source) => `<li>${m(docs.find((d) => d.file.id === source.fileId)?.file.path ?? '')}・第 ${source.page} 頁・${ROLE_LABEL[source.role]}・${source.used ? '此段文字用於核對，需對照原頁' : '文字已保留，尚待配對或補欄'}</li>`).join('');
+      return `<section class="unit"><h3>${ui + 1}. ${m(u.label)} <span class="tag u-${us}">${UNIT_STATUS_LABEL[us]}</span></h3>${u.subLabel ? `<div class="mut">${m(u.subLabel)}</div>` : ''}${u.match ? `<div class="mut">配對：${u.match.evidence.map(m).join('；')}${u.match.needsManual ? '（需人工確認）' : ''}</div>` : ''}${pasted ? `<div class="mut">由使用者從 Chrome PDF 貼入</div><ul>${pasted}</ul>` : ''}<table><thead><tr><th>欄位</th><th>狀態</th><th>來源 A</th><th>待核書狀 B</th><th>原因／計算</th><th>人工覆核</th></tr></thead><tbody>${rows || '<tr><td colspan="6">無檢查項目</td></tr>'}</tbody></table></section>`;
     })
     .join('');
   const counts = res.units.reduce<Record<string, number>>((acc, u) => {
@@ -92,7 +94,7 @@ pre{white-space:pre-wrap;background:#f5f7fa;padding:6px;margin:6px 0;font-family
 <tr><td>批次／案件</td><td>${m(opt.batchName)}</td></tr>
 <tr><td>核對流程</td><td>${escapeHtml(flow.id)}. ${escapeHtml(flow.title)}</td></tr>
 <tr><td>規則版本</td><td>${escapeHtml(res.ruleVersion)}；送達／利息規則 ${escapeHtml(SERVICE_RULE_VERSION)}；目前系統規則 ${escapeHtml(RULESET_VERSION)}</td></tr>
-<tr><td>文字辨識成功率</td><td>${st.ok}/${st.total} 頁（${st.rate}%）；OCR ${st.ocr} 頁；無法辨識 ${st.failed} 頁</td></tr>
+<tr><td>自動讀取頁數</td><td>${st.ok}/${st.total} 頁（${st.rate}%）；本機掃描辨識 ${st.ocr} 頁；未讀清楚 ${st.failed} 頁</td></tr>
 <tr><td>核對單位</td><td>共 ${res.units.length}：${Object.entries(counts).map(([k, v]) => `${UNIT_STATUS_LABEL[k as keyof typeof UNIT_STATUS_LABEL]} ${v}`).join('、') || '—'}</td></tr>
 <tr><td>人工覆核進度</td><td>${reviewed}/${totalItems} 項已標記</td></tr>
 ${opt.reviewer ? `<tr><td>覆核人員</td><td>${m(opt.reviewer)}</td></tr>` : ''}
@@ -109,7 +111,7 @@ ${res.batchIssues.length ? `<h2>批次問題與待人工處理</h2><ul>${res.bat
 
 export function buildCsvReport(res: FlowResult, opt: ReportOptions): string {
   const mm = (s: string) => (opt.mask ? maskText(s) : s);
-  const rows: unknown[][] = [['批次', '核對單位', '單位狀態', '欄位', '狀態', '優先', '來源A', '來源A位置', '書狀B', '書狀B位置', '原因', '計算', '人工覆核', '備註', '規則版本', '人工更正紀錄']];
+  const rows: unknown[][] = [['批次', '核對單位', '單位狀態', '欄位', '狀態', '優先', '來源A', '來源A位置', '書狀B', '書狀B位置', '原因', '計算', '人工覆核', '備註', '規則版本', '人工更正紀錄', '欄位讀取結果']];
   for (const u of res.units) {
     for (const i of u.items) {
       rows.push([
@@ -129,6 +131,7 @@ export function buildCsvReport(res: FlowResult, opt: ReportOptions): string {
         mm(i.review.note),
         res.ruleVersion,
         [i.a, i.b].flatMap((e) => e?.correction?.applied ? [mm(`${e.label}：${e.correction.original || '未讀到'} → ${e.correction.applied.value}（${e.correction.applied.by} ${e.correction.applied.at}）`)] : []).join('；'),
+        [i.a, i.b].flatMap((e) => e?.candidates?.map(({ value, prov }) => mm(`${value}（${provLabel(prov)}）`)) ?? []).join('；'),
       ]);
     }
   }

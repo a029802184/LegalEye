@@ -4,8 +4,8 @@
 
 import { centsToString, findLabeledAmounts, type LabeledAmount } from '../core/amount';
 import { compareAddress, compareNames, uid } from '../core/text';
-import { compareIds, maskId, validateTwId } from '../core/idno';
-import { debtorFields, findAddresses, findDebtorNames, findIds, findLabeledNames, findPhones, findSerials, labeledNameFields, type Hit } from '../core/extract';
+import { compareIds, validateTwId } from '../core/idno';
+import { debtorFields, findAddresses, findDebtorNames, findIds, findLabeledNames, findPhones, findSerials, isLabeledId, labeledNameFields, type Hit } from '../core/extract';
 import { findDates, fmtBoth, parseDate, sameDay, type YMD } from '../core/date';
 import { detectInterestClause } from '../core/service';
 import { RULESET_VERSION } from '../core/rules';
@@ -29,24 +29,31 @@ export function personsFromHousehold(doc: ExtractedDoc): Person[] {
   const out: Person[] = [];
   for (const p of doc.pages) {
     const t = p.text.normalize('NFKC');
-    const ids = findIds(t);
-    const current = t.split(/(?:地址變更|戶址變更|遷徙記事|全戶動態記事|個人記事)/)[0];
-    const addr = findAddresses(current).find((a) => /^(戶籍地址|戶籍地)/.test(a.raw));
-    const labels = labeledNameFields(t);
+    const current = t.split(/(?:地\s*址\s*變\s*更|戶\s*址\s*變\s*更|遷\s*徙\s*記\s*事|全戶動態記事|個人記事)/)[0];
+    const ids = findIds(current);
+    const addresses = findAddresses(current).filter((a) => /^戶\s*籍\s*地/.test(a.raw));
+    const labels = labeledNameFields(current);
+    const relativeOnLine = (index: number, start = 0) => /(?:父親?|母親?|配偶|戶長)(?:\s*姓名)?\s*[:：][^\n]*$/.test(current.slice(Math.max(start, current.lastIndexOf('\n', index) + 1), index));
+    const labeledIds = ids.filter((id) => isLabeledId(current, id.index));
+    const sectionStarts = [0, ...[...current.matchAll(/^[ \t]*戶[ \t]*籍[ \t]*(?:謄[ \t]*本|資[ \t]*料)/gm)].map((match) => match.index).filter((index) => index > 0)];
     const groups = labels.map((m, i) => {
       const at = m.index;
-      const end = labels[i + 1]?.index ?? t.length;
-      const n = m.name;
-      const candidates = ids.filter((id) => id.index >= at && id.index < end && id.index - at < 85 && !/(?:父|母|配偶|戶長)(?:親|姓名)?\s*[:：][^\n]*$/.test(t.slice(at, id.index)));
-      return { n, id: candidates.length === 1 ? candidates[0] : undefined, at };
+      const sectionEnd = sectionStarts.find((index) => index > at) ?? current.length;
+      const sectionStart = sectionStarts.filter((index) => index <= at).pop() ?? 0;
+      const firstName = labels.find((label) => label.index >= sectionStart)?.index ?? at;
+      const end = Math.min(labels[i + 1]?.index ?? current.length, sectionEnd);
+      const candidates = labeledIds.filter((id) => id.index >= at && id.index < end && id.index - at < 125 && !relativeOnLine(id.index, at));
+      const local = addresses.filter((a) => a.index >= at && a.index < end && !relativeOnLine(a.index, at));
+      const header = addresses.filter((a) => a.index >= sectionStart && a.index < firstName && !relativeOnLine(a.index));
+      const choices = local.length ? local : header;
+      return { n: m.name, id: candidates.length === 1 ? candidates[0] : undefined, addr: choices.length === 1 ? choices[0] : undefined, at };
     });
     if (!labels.length) {
-      const labeledIds = ids.filter((id) => /(?:身分證(?:統一)?(?:編號|字號)?|統一編號)\s*[:：]?\s*$/.test(t.slice(Math.max(0, id.index - 28), id.index))
-        && !/(?:父|母|配偶|戶長)[^\n]*$/.test(t.slice(Math.max(0, id.index - 40), id.index)));
-      const id = labeledIds.length === 1 ? labeledIds[0] : undefined;
-      groups.push({ n: undefined, id, at: id?.index ?? 0 });
+      const ownIds = labeledIds.filter((hit) => !relativeOnLine(hit.index));
+      const id = ownIds.length === 1 ? ownIds[0] : undefined;
+      groups.push({ n: undefined, id, addr: addresses.length === 1 ? addresses[0] : undefined, at: id?.index ?? 0 });
     }
-    for (const { n, id, at } of groups) {
+    for (const { n, id, addr, at } of groups) {
       out.push({
         key: `${doc.file.id}:${p.page}:${at}`,
         name: n?.value ?? '',
@@ -105,8 +112,8 @@ interface PetitionFacts {
   serials: string[];
   phones: string[];
   amounts: LabeledAmount[];
-  principal?: LabeledAmount;
-  baseDate?: { value: YMD; raw: string };
+  principal?: LabeledAmount & { prov: Provenance };
+  baseDate?: { value: YMD; raw: string; prov: Provenance };
   clauseRaw: string;
   clauseType: string;
 }
@@ -132,8 +139,8 @@ function readPetition(doc: ExtractedDoc, key: string): PetitionFacts {
     serials: findSerials(t).map((s) => s.value),
     phones: findPhones(t).map((p) => p.value),
     amounts: am,
-    principal: am.find((a) => a.kind === 'principal') ?? am.find((a) => a.kind === 'balance'),
-    baseDate: bd ? { value: bd.value, raw: bd.raw } : undefined,
+    principal: wrap(am.find((a) => a.kind === 'principal') ?? am.find((a) => a.kind === 'balance')),
+    baseDate: wrap(bd),
     clauseRaw: clause.raw,
     clauseType: clause.clause.type,
   };
@@ -169,8 +176,7 @@ function scorePerson(p: PetitionFacts, x: Person): { score: number; why: string[
 function scoreStatement(p: PetitionFacts, s: Statement): { score: number; why: string[] } {
   let score = 0;
   const why: string[] = [];
-  const pt = p.doc.fullText.normalize('NFKC');
-  if (s.fileNumber && pt.match(/\d+/g)?.includes(s.fileNumber)) {
+  if (s.fileNumber && p.serials.includes(s.fileNumber)) {
     score += 0.5;
     why.push(`聲請狀含檔名編號 ${s.fileNumber}`);
   }
@@ -204,7 +210,7 @@ function householdEvidence(person: Person, petition: string, field: 'name' | 'id
   const source = (field === 'address' ? person.addrProv : field === 'id' ? person.idProv : person.prov) ?? person.prov;
   return {
     ...ev('戶籍謄本', original, applied?.value ?? original, applied ? { ...source, method: 'manual', confidence: 1 } : source),
-    correction: { key, field, original, applied },
+    correction: { key, field, original, originalProv: source, applied },
   };
 }
 
@@ -242,8 +248,9 @@ export function runFlowC(docs: ExtractedDoc[], ctx: FlowCContext): FlowResult & 
   });
 
   const hhPages = households.reduce((n, d) => n + d.pages.length, 0);
-  if (households.length && hhPages !== petitions.length) {
-    issues.push({ id: uid('i'), level: 'warning', message: `戶籍謄本共 ${hhPages} 頁，聲請狀 ${petitions.length} 份，頁數與人數不同（可能有漏件、多頁或家屬頁），請人工確認` });
+  if (households.length && hhPages !== pets.length) {
+    const cases = petitions.length === pets.length ? `聲請狀 ${petitions.length} 份` : `聲請狀 ${petitions.length} 份，辨識出 ${pets.length} 件`;
+    issues.push({ id: uid('i'), level: 'warning', message: `戶籍謄本共 ${hhPages} 頁，${cases}，請確認是否有漏件、多頁或家屬頁` });
   }
   // 重複人名
   const nameCount = new Map<string, number>();
@@ -323,7 +330,7 @@ export function runFlowC(docs: ExtractedDoc[], ctx: FlowCContext): FlowResult & 
       items.push(
         item(ctx, 'C.id', '身分證字號（戶籍）', r === 'full' ? (checksum ? 'match' : 'needs-review') : r === 'partial' ? 'partial' : r === 'mismatch' ? 'mismatch' : 'missing', 'high', r === 'full' ? (checksum ? '全碼一致，檢查碼正確（不代表確屬本人）' : '全碼一致但檢查碼不符，請確認原文') : r === 'partial' ? '遮罩，僅部分核對' : r === 'mismatch' ? '身分證字號不同' : '無法比對', {
           a: household.id,
-          b: ev('聲請狀', maskId(p.id.value), maskId(p.id.value), p.id.prov),
+          b: ev('聲請狀', p.id.raw, p.id.value, p.id.prov),
         }),
       );
     } else items.push(item(ctx, 'C.id', '身分證字號（戶籍）', household ? 'unreadable' : identityStatus, 'high', household ? '身分證字號尚未讀出，請看原件' : missingPerson, { a: household?.id }));
@@ -339,10 +346,10 @@ export function runFlowC(docs: ExtractedDoc[], ctx: FlowCContext): FlowResult & 
     } else items.push(item(ctx, 'C.address', '地址（戶籍）', household ? 'unreadable' : identityStatus, 'medium', household ? '住址尚未讀出，請看原件' : missingPerson, { a: household?.address }));
     c.st = statement;
     // 金額：聲請本金 vs 總欠費
-    if (!c.st) items.push(item(ctx, 'C.amount', '聲請本金與欠費', 'missing', 'high', '沒有配對到帳務資料'));
+    if (!c.st) items.push(item(ctx, 'C.amount', '聲請本金與欠費', stDocs.length ? 'needs-review' : 'missing', 'high', stDocs.length ? '尚未確定帳務資料對應哪位債務人' : '尚未附上帳務資料'));
     else if (!c.st.balance) {
-      items.push(item(ctx, 'C.amount', '聲請本金與欠費', 'missing', 'high', c.st.currentBill ? '帳務資料只有「本期應繳」，未明確標示總欠費／未償債務額；不以本期應繳當作未償本金' : '帳務資料未辨識到總欠費／未償債務額'));
-    } else if (!p.principal) items.push(item(ctx, 'C.amount', '聲請本金與欠費', 'missing', 'high', '聲請狀未辨識到請求金額'));
+      items.push(item(ctx, 'C.amount', '聲請本金與欠費', c.st.currentBill ? 'missing' : 'unreadable', 'high', c.st.currentBill ? '帳務資料只有「本期應繳」，未明確標示總欠費／未償債務額；不以本期應繳當作未償本金' : '帳務資料的總欠費／未償債務額尚未抓出，請看原件'));
+    } else if (!p.principal) items.push(item(ctx, 'C.amount', '聲請本金與欠費', 'unreadable', 'high', '聲請狀的請求金額尚未抓出，請看原件'));
     else {
       const same = p.principal.cents === c.st.balance.cents;
       const dateDiff = p.baseDate && c.st.baseDate && !sameDay(p.baseDate.value, c.st.baseDate.value);
@@ -350,7 +357,7 @@ export function runFlowC(docs: ExtractedDoc[], ctx: FlowCContext): FlowResult & 
       items.push(
         item(ctx, 'C.amount', '聲請本金與欠費', same ? 'match' : unclear ? 'needs-review' : 'mismatch', 'high', same ? '聲請本金與總欠費一致' : unclear ? `金額待釐清：可能有已繳款、沖抵或計算截止日不同${c.st.paid.length ? `（帳務記載已繳 ${c.st.paid.map((x) => centsToString(x.cents)).join('、')}）` : ''}` : '聲請本金與總欠費不同（截止日相同、無已繳紀錄）', {
           a: ev('帳務資料', c.st.balance.raw, centsToString(c.st.balance.cents), c.st.balance.prov),
-          b: ev('聲請狀', p.principal.raw, centsToString(p.principal.cents)),
+          b: ev('聲請狀', p.principal.raw, centsToString(p.principal.cents), p.principal.prov),
         }),
       );
     }
@@ -363,7 +370,7 @@ export function runFlowC(docs: ExtractedDoc[], ctx: FlowCContext): FlowResult & 
     // 基準日
     if (p.baseDate && c.st?.baseDate) {
       const same = sameDay(p.baseDate.value, c.st.baseDate.value);
-      items.push(item(ctx, 'C.basedate', '資料基準日', same ? 'match' : 'needs-review', 'medium', same ? '計算基準日一致' : '基準日不同，金額差異可能來自計算期間不同', { a: ev('帳務資料', c.st.baseDate.raw, fmtBoth(c.st.baseDate.value), c.st.baseDate.prov), b: ev('聲請狀', p.baseDate.raw, fmtBoth(p.baseDate.value)) }));
+      items.push(item(ctx, 'C.basedate', '資料基準日', same ? 'match' : 'needs-review', 'medium', same ? '計算基準日一致' : '基準日不同，金額差異可能來自計算期間不同', { a: ev('帳務資料', c.st.baseDate.raw, fmtBoth(c.st.baseDate.value), c.st.baseDate.prov), b: ev('聲請狀', p.baseDate.raw, fmtBoth(p.baseDate.value), p.baseDate.prov) }));
     } else items.push(item(ctx, 'C.basedate', '資料基準日', 'missing', 'low', '聲請狀或帳務資料未載明計算基準日'));
     // 利息：聲請階段為條件式請求
     if (p.clauseType === 'after-service') {
@@ -387,7 +394,7 @@ export function runFlowC(docs: ExtractedDoc[], ctx: FlowCContext): FlowResult & 
   for (const s of statements) {
     if (!stClaims.has(s.doc.file.id)) issues.push({ id: uid('i'), level: 'warning', message: `帳務資料 ${s.doc.file.path}${s.fileNumber ? `（編號 ${s.fileNumber}）` : ''} 無法配對到任何聲請狀`, fileId: s.doc.file.id });
   }
-  const unmatchedPersons = persons.filter((x) => !personClaims.has(x.key));
+  const unmatchedPersons = persons.filter((x) => (x.name || x.id) && !personClaims.has(x.key));
   if (unmatchedPersons.length && persons.length) {
     issues.push({ id: uid('i'), level: 'info', message: `戶籍謄本中有 ${unmatchedPersons.length} 筆個人資料未配對到聲請狀（可能為同戶家屬，系統不會將其視為債務人）` });
   }

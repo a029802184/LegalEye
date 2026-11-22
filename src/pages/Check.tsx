@@ -1,14 +1,16 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useApp, type CheckSession } from '../state/store';
 import { Icon, PageHead, useConfirm } from '../ui/components';
 import { isLowMemoryDevice, readFileBytes } from '../ui/util';
 import { FLOWS, runFlow } from '../flows';
 import { ingest, type IngestProgress, type InputFile } from '../core/ingest';
-import { ROLE_LABEL, type DocRole, type ExtractedDoc, type FlowId, type FlowResult } from '../core/types';
+import { ROLE_LABEL, type CheckUnit, type DocRole, type ExtractedDoc, type FlowId, type FlowResult } from '../core/types';
 import { pageRole } from '../core/classify';
 import { FlowCards } from '../ui/FlowCards';
 import { Results } from './check/Results';
 import { DocViewer } from './check/DocViewer';
+import { ChromeTextForm } from './check/ChromeText';
+import { saveChromePage } from '../flows/chromeText';
 import { provAt } from '../flows/common';
 
 type UploadProgress = Omit<IngestProgress, 'phase'> & { phase: IngestProgress['phase'] | 'read' };
@@ -34,7 +36,7 @@ const DOC_STATUS: Record<ExtractedDoc['status'], string> = {
 /** 重新執行時保留人工覆核紀錄（依檔案＋單位＋欄位＋序號對應） */
 function mergeReviews(prev: FlowResult | undefined, next: FlowResult): FlowResult {
   if (!prev) return next;
-  const key = (u: FlowResult['units'][number], field: string, n: number) => `${u.pairKey || u.serviceKey || u.docs[0]?.fileId}|${u.subLabel}|${field}|${n}`;
+  const key = (u: FlowResult['units'][number], field: string, n: number) => `${u.id}|${field}|${n}`;
   const map = new Map<string, FlowResult['units'][number]['items'][number]>();
   for (const u of prev.units) {
     const cnt = new Map<string, number>();
@@ -52,7 +54,8 @@ function mergeReviews(prev: FlowResult | undefined, next: FlowResult): FlowResul
       const previous = map.get(key(u, i.field, n));
       if (!previous) continue;
       i.id = previous.id;
-      const source = (ev: typeof i.a) => [ev?.prov?.fileId, ev?.prov?.page, ev?.normalized, ev?.correction?.applied?.at].join('|');
+      const source = (ev: typeof i.a) => JSON.stringify([ev?.prov?.fileId, ev?.prov?.page, ev?.normalized, ev?.correction?.applied?.at,
+        ev?.candidates?.map((candidate) => [candidate.prov.fileId, candidate.prov.page, candidate.value])]);
       if (previous.status === i.status && source(previous.a) === source(i.a) && source(previous.b) === source(i.b)) i.review = { ...previous.review };
     }
   }
@@ -85,6 +88,9 @@ function FlowWorkspace({ flow }: { flow: FlowId }) {
   const [ocrReady, setOcrReady] = useState<boolean | null>(null);
   const [showFiles, setShowFiles] = useState(!session?.result);
   const [scanPreview, setScanPreview] = useState<string>();
+  const [chromeOpen, setChromeOpen] = useState(false);
+  const [chromeTarget, setChromeTarget] = useState<CheckUnit>();
+  const chromeHeading = useRef<HTMLHeadingElement>(null);
   const [enforcementStep, setEnforcementStep] = useState(3);
   const abort = useRef<AbortController | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -92,6 +98,8 @@ function FlowWorkspace({ flow }: { flow: FlowId }) {
   const resultsRegion = useRef<HTMLDivElement>(null);
   const focusStep = useRef<2 | 3 | null>(null);
   const lowMem = isLowMemoryDevice();
+  const assistanceUnits = useMemo(() => chromeOpen && session && !session.result ? runFlow(flow, session.docs, { settings }).units : session?.result?.units ?? [],
+    [chromeOpen, flow, session, settings]);
 
   useEffect(() => {
     let alive = true;
@@ -111,7 +119,7 @@ function FlowWorkspace({ flow }: { flow: FlowId }) {
   useEffect(() => () => abort.current?.abort(), []);
 
   const rerun = (s: CheckSession): CheckSession => {
-    const result = mergeReviews(s.result, runFlow(flow, s.docs, { settings, service: s.service, manualPairs: s.manualPairs, corrections: s.corrections }));
+    const result = mergeReviews(s.result, runFlow(flow, s.docs, { settings, service: s.service, manualPairs: s.manualPairs, corrections: s.corrections, chromePages: s.chromePages }));
     return { ...s, result };
   };
 
@@ -144,6 +152,9 @@ function FlowWorkspace({ flow }: { flow: FlowId }) {
       const s: CheckSession = { flow, batchName, docs: r.docs, skipped: r.skipped, folders: r.folders, errors: r.errors, service: {}, manualPairs: {} };
       focusStep.current = 2;
       setShowFiles(true);
+      setChromeTarget(undefined);
+      setChromeOpen(false);
+      setScanPreview(undefined);
       setSession(flow, s);
       toast(`已讀取 ${r.docs.length} 個檔案${r.skipped.length ? `，略過 ${r.skipped.length} 個` : ''}`);
     } catch (e) {
@@ -164,7 +175,7 @@ function FlowWorkspace({ flow }: { flow: FlowId }) {
   };
 
   const beginCheck = () => {
-    if (!session || !session.docs.some((d) => d.fullText.trim())) return;
+    if (!session || !session.docs.some((d) => d.fullText.trim() || (d.file.kind === 'pdf' && d.role !== 'unknown' && d.pages.length))) return;
     focusStep.current = 3;
     setShowFiles(false);
     setSession(flow, rerun(session));
@@ -173,6 +184,9 @@ function FlowWorkspace({ flow }: { flow: FlowId }) {
   const clear = async () => {
     const message = session?.result ? '清除本次文件、核對結果與人工覆核紀錄？請先下載需要留存的報告。' : '清除本次匯入的所有文件？';
     if (!(await confirm(message, { danger: true, okText: '清除' }))) return;
+    setChromeOpen(false);
+    setChromeTarget(undefined);
+    setScanPreview(undefined);
     setSession(flow, undefined);
     toast('已清除本次資料');
   };
@@ -181,6 +195,13 @@ function FlowWorkspace({ flow }: { flow: FlowId }) {
   const step = progress ? 1 : session?.result ? 3 : session ? 2 : 1;
   const docs = session?.docs ?? [];
   const readable = docs.some((d) => d.fullText.trim());
+  const canCheck = readable || docs.some((d) => d.file.kind === 'pdf' && d.role !== 'unknown' && d.pages.length);
+  const openChrome = (unit?: CheckUnit) => {
+    setChromeTarget(unit);
+    setChromeOpen(true);
+    chromeHeading.current?.focus({ preventScroll: true });
+    chromeHeading.current?.scrollIntoView({ block: 'start' });
+  };
   const mergedRoles = docs.filter((d) => d.role === 'merged-source').flatMap((d) => d.pages.map((p) => pageRole(p.text)));
   const roleStates = ROLES[flow].map((role) => {
     const found = docs.filter((d) => d.role === role);
@@ -261,7 +282,8 @@ function FlowWorkspace({ flow }: { flow: FlowId }) {
               <p className="cell-sub">支援 ZIP、PDF、DOCX、XLSX、TXT、CSV</p>
               <p className="cell-sub only-desktop">也可以將檔案拖曳到這裡</p>
             </div>
-            <div className="upload-options">
+            <div className="upload-options" aria-labelledby="scan-method-heading">
+              <h3 id="scan-method-heading" ref={chromeHeading} tabIndex={-1}>讀取掃描文件文字</h3>
               <label className="check">
                 <input type="checkbox" checked={ocr} disabled={!!progress} onChange={(e) => setOcr(e.target.checked)} />
                 自動辨識掃描文件中的文字
@@ -269,7 +291,17 @@ function FlowWorkspace({ flow }: { flow: FlowId }) {
               <span className="cell-sub">
                 如果 PDF 是掃描圖片，系統會嘗試讀取姓名、身分證字號與地址。可能多花一些時間，資料只在這台裝置處理。已有文字的頁面會直接讀取。
               </span>
-              <span className="cell-sub">{ocrReady === null ? '正在準備掃描文字辨識…' : ocrReady ? '掃描文字辨識已準備好，可在本機處理檔案。' : '掃描辨識工具目前無法使用，請查看原件或改用有文字的 PDF。'}</span>
+              <span className="cell-sub">{ocrReady === null ? '正在準備掃描文字辨識…' : ocrReady ? '掃描文字辨識已準備好，可在本機處理檔案。' : '掃描辨識工具目前無法使用，可用 Chrome 協助讀取或手動更正。'}</span>
+              <div className="toolbar">
+                <button className="btn small" type="button" disabled={!!progress} aria-expanded={chromeOpen} aria-controls="chrome-text-form" onClick={() => {
+                  if (chromeOpen) setChromeOpen(false);
+                  else openChrome();
+                }}>使用 Chrome 協助讀取掃描文件</button>
+                {canCheck && <button className="btn small" type="button" disabled={!!progress} onClick={() => {
+                  if (!session?.result) beginCheck();
+                  else { resultsRegion.current?.scrollIntoView({ block: 'start' }); resultsRegion.current?.focus({ preventScroll: true }); }
+                }}>我直接更正文字</button>}
+              </div>
             </div>
             {lowMem && ocr && <p className="cell-sub">行動裝置會逐頁辨識。大量掃描檔建議使用桌機。</p>}
             {progress && (
@@ -283,6 +315,17 @@ function FlowWorkspace({ flow }: { flow: FlowId }) {
             )}
           </div>
         </div>
+        {chromeOpen && !progress && <div className="panel-body" id="chrome-text-form">
+          <ChromeTextForm key={chromeTarget?.id ?? 'all'} docs={docs} units={assistanceUnits} roles={def.roles} initial={chromeTarget} onSave={(entry) => {
+            if (!session) return;
+            const updated = rerun({ ...session, chromePages: saveChromePage(session.chromePages ?? [], entry) });
+            focusStep.current = 3;
+            if (!session.result) setShowFiles(false);
+            setSession(flow, updated);
+            const used = updated.result?.units.find((u) => u.id === entry.unitId)?.chromeSources?.find((s) => s.fileId === entry.fileId && s.page === entry.page)?.used;
+            toast(used ? `已使用第 ${entry.page} 頁文字重新核對，請對照原件` : `已保留第 ${entry.page} 頁文字，請確認案件配對或補入完整欄位`);
+          }} />
+        </div>}
       </section>
 
       {session && (
@@ -306,10 +349,10 @@ function FlowWorkspace({ flow }: { flow: FlowId }) {
               </>}
               {!session.result && (
                 <div className="check-next">
-                  <p>{!readable ? '目前沒有可核對的文字，請確認檔案可讀或重新上傳。'
+                  <p>{!readable ? '目前沒有可核對的文字。可指定文件類型後，用 Chrome 協助讀取或查看原件。'
                     : roleStates.some(({ identified }) => !identified) ? '仍有文件未辨識或無法讀取。可先核對已讀取的文件，結果會列出缺漏。'
                     : '確認分類後，可查看核對結果、來源與校對報告。'}</p>
-                  <button className="btn primary" onClick={beginCheck} disabled={!readable || !!progress}>開始核對</button>
+                  <button className="btn primary" onClick={beginCheck} disabled={!canCheck || !!progress}>開始核對</button>
                 </div>
               )}
               {showFiles && <>
@@ -372,7 +415,7 @@ function FlowWorkspace({ flow }: { flow: FlowId }) {
 
       {session?.result && (
         <div ref={resultsRegion} tabIndex={-1} className="check-results" role="region" aria-label="核對結果與報告">
-          <Results session={session} onChange={(s) => setSession(flow, s)} onRerun={(s) => setSession(flow, rerun(s))} />
+          <Results session={session} onChange={(s) => setSession(flow, s)} onRerun={(s) => setSession(flow, rerun(s))} onChrome={openChrome} />
         </div>
       )}
       {confirmNode}

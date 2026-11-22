@@ -45,7 +45,8 @@ const doc = (id, role, text, scanned = false) => ({
 const register = (name, text) => `戶籍謄本\n戶籍地址：${text}\n姓名：${name}國民身分證統一編號：${syntheticId}`;
 const filed = doc('聲請狀', 'payment-order-petition', `支付命令聲請狀\n債務人：林測試\n身分證字號：${syntheticId}\n住所：${addr}`);
 
-for (const [version, revision] of [['V2', baseline], ['V3', undefined]]) {
+const v4 = process.argv.includes('--v4');
+for (const [version, revision] of v4 ? [['V3', '6166d59'], ['V4', undefined]] : [['V2', baseline], ['目前版本', undefined]]) {
   const load = loader(revision);
   const { findLabeledNames } = load('src/core/extract.ts');
   const { DEFAULT_SETTINGS: settings } = load('src/core/rules.ts');
@@ -55,11 +56,27 @@ for (const [version, revision] of [['V2', baseline], ['V3', undefined]]) {
     const result = runFlowC([filed, source], { settings });
     return { expected, actual: result.units[0].items.find((row) => row.field.startsWith('地址')).status };
   });
+  const nameCases = names.map((name) => [register(name, addr), name]);
+  if (v4) {
+    nameCases.push(
+      [`姓名：\n 林 甲 國 民\n身 份 証 統 一 編 號：${syntheticId}`, '林甲'],
+      [`姓名：陳測試國 民\n戶籍地址：${addr}`, '陳測試'],
+      [`姓名：王範例　身 份 証 統一編號：${syntheticId}`, '王範例'],
+    );
+    const wrapped = addr.replace('甲路98巷', '甲路\n 98巷');
+    const combined = register('王範例', addr.replace('98巷', '89巷')).replace(syntheticId, 'Y100000028') + '\n' + register('林測試', addr);
+    for (const [id, text] of [['換行地址', register('林測試', wrapped)], ['同頁兩人', combined]]) {
+      const source = doc(id, 'household-register', text);
+      const actual = runFlowC([filed, source], { settings }).units[0].items.find((row) => row.field.startsWith('地址')).status;
+      results.push({ expected: 'match', actual });
+    }
+  }
   console.log(version, JSON.stringify({
-    extractedNames: names.filter((name) => findLabeledNames(register(name, addr))[0]?.value === name).length,
-    totalNames: names.length,
+    extractedNames: nameCases.filter(([text, name]) => findLabeledNames(text)[0]?.value === name).length,
+    totalNames: nameCases.length,
     consistent: results.filter((r) => r.actual === 'match').length,
     review: results.filter((r) => r.actual === 'needs-review').length,
+    unreadable: results.filter((r) => r.actual === 'unreadable').length,
     trueMismatch: results.filter((r) => r.actual === 'mismatch' && r.expected === 'mismatch').length,
     falseMismatch: results.filter((r) => r.actual === 'mismatch' && r.expected !== 'mismatch').length,
     statusAccuracy: results.filter((r) => r.actual === r.expected).length,

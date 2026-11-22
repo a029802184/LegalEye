@@ -29,13 +29,13 @@ function unitDone(u: CheckUnit): boolean {
   return u.items.every((i) => i.status === 'match' || i.status === 'not-applicable' || i.review.state !== 'pending');
 }
 
-export function Results({ session, onChange, onRerun }: { session: CheckSession; onChange: (s: CheckSession) => void; onRerun: (s: CheckSession) => void }) {
-  const { settings, toast } = useApp();
+export function Results({ session, onChange, onRerun, onChrome }: { session: CheckSession; onChange: (s: CheckSession) => void; onRerun: (s: CheckSession) => void; onChrome: (unit: CheckUnit) => void }) {
+  const { toast } = useApp();
   const res = session.result!;
   const wide = useMedia('(min-width: 1024px)');
   const [filter, setFilter] = useState<Filter>('all');
   const [sel, setSel] = useState<string | null>(null);
-  const [mask, setMask] = useState(settings.maskByDefault);
+  const [mask, setMask] = useState(true);
   const [reviewer, setReviewer] = useState('');
   const detailRef = useRef<HTMLDivElement>(null);
 
@@ -148,7 +148,7 @@ export function Results({ session, onChange, onRerun }: { session: CheckSession;
                 </button>
               </div>
             )}
-            <UnitDetail key={unit.id} unit={unit} session={session} onReview={updateItem} onRerun={onRerun} />
+            <UnitDetail key={unit.id} unit={unit} session={session} onReview={updateItem} onRerun={onRerun} onChrome={() => onChrome(unit)} />
           </section>
         )}
       </div>
@@ -209,11 +209,13 @@ function UnitDetail({
   session,
   onReview,
   onRerun,
+  onChrome,
 }: {
   unit: CheckUnit;
   session: CheckSession;
   onReview: (u: CheckUnit, i: CheckItem, patch: Partial<CheckItem['review']>) => void;
   onRerun: (s: CheckSession) => void;
+  onChrome: () => void;
 }) {
   const firstIssue = unit.items.find((i) => i.status !== 'match' && i.status !== 'not-applicable');
   const [open, setOpen] = useState<string | null>(firstIssue?.id ?? null);
@@ -231,6 +233,23 @@ function UnitDetail({
         </div>
         <UnitBadge status={st} />
       </div>
+      {session.docs.some((d) => d.file.kind === 'pdf' && d.pages.length) && <div className="panel-body chrome-unit" aria-label="本案貼入文字">
+        <button type="button" className="btn small" onClick={onChrome}>貼上更清楚的文字</button>
+        {unit.chromeSources?.map((source) => {
+          const doc = session.docs.find((d) => d.file.id === source.fileId);
+          if (!doc) return null;
+          return <details className="chrome-source" key={`${source.fileId}:${source.page}`}>
+            <summary>{doc.file.path}・第 {source.page} 頁・{source.used ? '已比對此段文字，請看原件' : '文字已保留，請確認配對或補齊欄位'}</summary>
+            <div className="viewer-text">{maskText(session.chromePages?.find((entry) => entry.unitId === unit.id && entry.fileId === source.fileId && entry.page === source.page)?.text ?? '')}</div>
+            <button type="button" className="btn small" onClick={() => {
+              const prefix = `chrome:${unit.id}:${source.fileId}:${source.page}:${source.role}:`;
+              const corrections = Object.fromEntries(Object.entries(session.corrections ?? {}).filter(([key]) => !key.startsWith(prefix)));
+              const chromePages = session.chromePages?.filter((entry) => entry.unitId !== unit.id || entry.fileId !== source.fileId || entry.page !== source.page);
+              onRerun({ ...session, corrections, chromePages });
+            }}>移除本頁貼入文字</button>
+          </details>;
+        })}
+      </div>}
       {unit.match && (
         <div className="panel-body" style={{ borderBottom: '1px solid var(--line)' }}>
           <div className="cell-sub">
@@ -402,8 +421,11 @@ function EvCard({ ev, title, session, compact, onCorrect }: { ev: Evidence; titl
           <div className="val">{m(ev.normalized) || '—'}</div>
           <div className="raw">原文：{m(ev.raw) || '—'}</div>
           {ev.correction?.applied && <div className="cell-sub">已由人工確認{ev.correction.applied.by ? `（${m(ev.correction.applied.by)}）` : ''}</div>}
-          {ev.prov && <div className="loc">來源：{provLabel(ev.prov)}</div>}
+          {ev.prov && <div className="loc">來源：{m(provLabel(ev.prov))}</div>}
           {ev.prov?.raw && ev.prov.raw !== ev.raw && <div className="raw">前後文：{m(ev.prov.raw)}</div>}
+          {ev.candidates && <ul className="source-candidates" aria-label="欄位讀取結果">{ev.candidates.map(({ value, prov }, i) => <li key={`${prov.method}:${i}`}>
+            <div>{m(value)}</div><div className="loc">{m(provLabel(prov))}</div>
+          </li>)}</ul>}
         </>}
         {!tabbed && doc && <button className="btn small" style={{ marginTop: 6 }} aria-expanded={view} onClick={() => setView(!view)}>{view ? '收合原文' : '查看原頁'}</button>}
         {view && doc && ev.prov && <DocViewer doc={doc} prov={ev.prov} />}

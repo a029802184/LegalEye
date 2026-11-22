@@ -97,7 +97,7 @@ const ADDRESS_PARTS: Record<string, string> = { 鄰: '鄰號', 段: '路段', �
 /** 只處理行政地址位置有明確語義的數字。保留房號、附號與連字號的原有寫法。 */
 export function normAddress(s: string): string {
   return stripSpaces(s)
-    .replace(/^(?:\d{6}|\d{5}|\d{3})(?=[\p{Script=Han}]{1,3}[市縣])/u, '')
+    .replace(/^(?:\d{6}|\d{5}|\d{3})(?=(?:[臺台]灣省|福建省)?[\p{Script=Han}]{1,3}[市縣])/u, '')
     .replace(/臺/g, '台')
     .replace(/[,，、]/g, '')
     .replace(ADDRESS_NUM, (raw, value: string, suffix: string) => {

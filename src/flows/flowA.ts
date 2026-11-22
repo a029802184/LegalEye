@@ -5,8 +5,8 @@
 import { caseKey, compareCase, findCaseNumbers, findCourts, fmtCase, type CaseNo } from '../core/court';
 import { centsToString, findLabeledAmounts, type LabeledAmount } from '../core/amount';
 import { compareNames, uid } from '../core/text';
-import { compareIds, isMasked, maskId } from '../core/idno';
-import { findBankAccounts, findDebtorNames, findIds, type Hit } from '../core/extract';
+import { compareIds, isMasked, validateTwId } from '../core/idno';
+import { debtorFields, findBankAccounts, findDebtorNames, findIds, partyBlocks, type Hit } from '../core/extract';
 import { RULESET_VERSION } from '../core/rules';
 import type { BatchIssue, CheckItem, CheckUnit, ExtractedDoc, FlowResult } from '../core/types';
 import { ev, item, provAt, type FlowContext, type PageHit } from './common';
@@ -39,7 +39,13 @@ function collect(doc: ExtractedDoc, pages: number[], ctx: FlowContext): Facts {
       findCaseNumbers(t).filter((c) => !c.isDocRef),
     );
     push(f.names, findDebtorNames(t));
-    push(f.ids, findIds(t));
+    const parties = partyBlocks(t);
+    const id = debtorFields(t).id;
+    if (id) push(f.ids, [id]);
+    else if (!parties.length && findDebtorNames(t).length === 1) {
+      const ids = findIds(t);
+      if (ids.length === 1) push(f.ids, ids);
+    }
     push(f.amounts, findLabeledAmounts(t));
     push(f.accounts, findBankAccounts(t));
     if (/執行命令/.test(t)) f.hasOrderTitle = true;
@@ -50,17 +56,24 @@ function collect(doc: ExtractedDoc, pages: number[], ctx: FlowContext): Facts {
 
 /** 法院公文：依案號（＋債務人）切組；沒有案號的頁面視為前一組的續頁 */
 function groupCourtPages(doc: ExtractedDoc): number[][] {
-  const groups: { key: string; pages: number[] }[] = [];
+  const groups: { key: string; name?: string; pages: number[] }[] = [];
   for (const p of doc.pages) {
     const cases = findCaseNumbers(p.text).filter((c) => !c.isDocRef);
     const names = findDebtorNames(p.text);
-    const key = cases.length ? caseKey(cases[0]) + '|' + (names[0]?.value ?? '') : '';
+    const caseNumbers = [...new Set(cases.map(caseKey))];
+    const namesOnPage = [...new Set(names.map((hit) => hit.value))];
+    if (caseNumbers.length > 1 || namesOnPage.length > 1) {
+      groups.push({ key: '', pages: [p.page] });
+      continue;
+    }
+    const key = caseNumbers[0] ?? '';
+    const name = namesOnPage[0];
     const cur = groups[groups.length - 1];
-    const startsNew = !!key && (!cur || (cur.key !== key && /執行命令|受文者|發文/.test(p.text.slice(0, 160))));
-    if (!cur || startsNew) groups.push({ key, pages: [p.page] });
+    const startsNew = (key && cur?.key !== key) || (name && name !== cur?.name);
+    if (!cur || startsNew) groups.push({ key, name, pages: [p.page] });
     else {
       cur.pages.push(p.page);
-      if (!cur.key && key) cur.key = key;
+      if (!cur.name && name) cur.name = name;
     }
   }
   return groups.map((g) => g.pages);
@@ -81,15 +94,22 @@ export function runFlowA(docs: ExtractedDoc[], ctx: FlowContext): FlowResult {
   }
 
   const courtGroups: Facts[] = [];
-  for (const d of courtDocs) for (const pages of groupCourtPages(d)) courtGroups.push(collect(d, pages, ctx));
+  for (const d of courtDocs) for (const pages of groupCourtPages(d)) {
+    const facts = collect(d, pages, ctx);
+    if (new Set(facts.cases.map((c) => caseKey(c.hit))).size > 1 || new Set(facts.names.map((n) => n.hit.value)).size > 1) {
+      issues.push({ id: uid('i'), level: 'warning', message: `${d.file.path} 第 ${pages[0]} 頁有多個案號或當事人，請查看原件確認配對`, fileId: d.file.id });
+      continue;
+    }
+    courtGroups.push(facts);
+  }
 
   const units: CheckUnit[] = [];
   const used = new Set<Facts>();
   for (const letter of letters) {
     for (const p of letter.pages) {
-      if (!p.text.trim()) continue;
+      if (!p.text.trim() && letter.file.kind !== 'pdf') continue;
       const lf = collect(letter, [p.page], ctx);
-      if (!lf.cases.length && !lf.names.length) continue; // 封面或空白頁
+      if (!lf.cases.length && !lf.names.length && letter.file.kind !== 'pdf') continue;
       const lCase = lf.cases[0]?.hit;
       const lName = lf.names[0]?.hit.value ?? '';
       // 配對：案號完全相同 → 再以姓名區分；找不到再以姓名找（案號可能誤植）
@@ -105,7 +125,7 @@ export function runFlowA(docs: ExtractedDoc[], ctx: FlowContext): FlowResult {
       }
       const g = cands.length === 1 ? cands[0] : undefined;
       const unit: CheckUnit = {
-        id: uid('u'),
+        id: `a:${letter.file.id}:${p.page}`,
         label: lName || `通知函第 ${p.page} 頁`,
         subLabel: lCase ? fmtCase(lCase) : '通知函未辨識到案號',
         docs: [{ role: 'notice-letter', fileId: letter.file.id, pages: [p.page] }],
@@ -119,7 +139,7 @@ export function runFlowA(docs: ExtractedDoc[], ctx: FlowContext): FlowResult {
         unit.docs.push({ role: 'court-notice', fileId: g.doc.file.id, pages: g.pages });
         unit.items = compareA(lf, g, ctx);
       } else {
-        unit.items = [item(ctx, 'A.case', '配對', 'missing', 'high', unit.match!.evidence[0], lCase ? { b: ev('通知函案號', lf.cases[0].hit.raw, fmtCase(lCase), lf.cases[0].prov) } : {})];
+        unit.items = [item(ctx, 'A.case', '配對', courtDocs.length ? 'needs-review' : 'missing', 'high', unit.match!.evidence[0], lCase ? { b: ev('通知函案號', lf.cases[0].hit.raw, fmtCase(lCase), lf.cases[0].prov) } : {})];
       }
       unit.items.push(...internalA(lf, ctx));
       units.push(unit);
@@ -144,8 +164,8 @@ function compareA(l: Facts, c: Facts, ctx: FlowContext): CheckItem[] {
   // 法院
   const lc = l.courts[0];
   const cc = c.courts[0];
-  if (!cc) items.push(item(ctx, 'A.court', '法院名稱', 'missing', 'medium', '法院公文未辨識到法院名稱（可能為掃描或格式特殊）'));
-  else if (!lc) items.push(item(ctx, 'A.court', '法院名稱', 'missing', 'medium', '通知函未記載法院名稱', { a: ev('法院公文', cc.hit.raw, cc.hit.canonical, cc.prov) }));
+  if (!cc) items.push(item(ctx, 'A.court', '法院名稱', 'unreadable', 'medium', '法院公文的法院名稱尚未抓出，請看原件'));
+  else if (!lc) items.push(item(ctx, 'A.court', '法院名稱', 'unreadable', 'medium', '通知函的法院名稱尚未抓出，請看原件', { a: ev('法院公文', cc.hit.raw, cc.hit.canonical, cc.prov) }));
   else
     items.push(
       item(ctx, 'A.court', '法院名稱', lc.hit.canonical === cc.hit.canonical ? 'match' : 'mismatch', 'high', lc.hit.canonical === cc.hit.canonical ? '法院名稱一致（已正規化臺／台與簡稱）' : '法院名稱不同', {
@@ -164,7 +184,10 @@ function compareA(l: Facts, c: Facts, ctx: FlowContext): CheckItem[] {
         b: ev('通知函', lk.hit.raw, fmtCase(lk.hit), lk.prov),
       }),
     );
-  } else items.push(item(ctx, 'A.case', '年度／字別／案號', 'missing', 'high', !ck ? '法院公文未辨識到案號' : '通知函未辨識到案號'));
+  } else items.push(item(ctx, 'A.case', '年度／字別／案號', 'unreadable', 'high', !ck ? '法院公文的案號尚未抓出' : '通知函的案號尚未抓出', {
+    a: ev('法院公文', ck?.hit.raw ?? '', ck ? fmtCase(ck.hit) : '', ck?.prov ?? (c.pages.length === 1 ? provAt(c.doc, c.pages[0], 0, '') : undefined)),
+    b: ev('通知函', lk?.hit.raw ?? '', lk ? fmtCase(lk.hit) : '', lk?.prov ?? provAt(l.doc, l.pages[0], 0, '')),
+  }));
   // 姓名
   const ln = l.names[0];
   const cn = c.names[0];
@@ -182,18 +205,23 @@ function compareA(l: Facts, c: Facts, ctx: FlowContext): CheckItem[] {
         b: ev('通知函', ln.hit.raw, ln.hit.value, ln.prov),
       }),
     );
-  } else items.push(item(ctx, 'A.name', '債務人姓名', 'missing', 'high', !cn ? '法院公文未辨識到債務人姓名' : '通知函未辨識到債務人姓名'));
+  } else items.push(item(ctx, 'A.name', '債務人姓名', 'unreadable', 'high', !cn ? '法院公文的債務人姓名尚未抓出' : '通知函的債務人姓名尚未抓出', {
+    a: ev('法院公文', cn?.hit.raw ?? '', cn?.hit.value ?? '', cn?.prov ?? (c.pages.length === 1 ? provAt(c.doc, c.pages[0], 0, '') : undefined)),
+    b: ev('通知函', ln?.hit.raw ?? '', ln?.hit.value ?? '', ln?.prov ?? provAt(l.doc, l.pages[0], 0, '')),
+  }));
   // 身分證
   const li = l.ids[0];
   const ci = c.ids[0];
-  if (!ci) items.push(item(ctx, 'A.id', '身分證字號', 'not-applicable', 'info', '法院公文未提供身分證字號（來源未提供），不判定錯誤', li ? { b: ev('通知函', maskId(li.hit.value), maskId(li.hit.value), li.prov) } : {}));
-  else if (!li) items.push(item(ctx, 'A.id', '身分證字號', 'not-applicable', 'info', '通知函未記載身分證字號', { a: ev('法院公文', maskId(ci.hit.value), maskId(ci.hit.value), ci.prov) }));
+  const sourceScan = c.doc.pages.some((p) => c.pages.includes(p.page) && (p.method === 'ocr' || p.method === 'chrome-pasted' || p.needsOcr));
+  if (!ci) items.push(item(ctx, 'A.id', '身分證字號', sourceScan ? 'unreadable' : 'not-applicable', 'info', sourceScan ? '掃描公文尚未抓出身分證字號，請看原件' : '法院公文未提供身分證字號（來源未提供），不判定錯誤', li ? { b: ev('通知函', li.hit.raw, li.hit.value, li.prov) } : {}));
+  else if (!li) items.push(item(ctx, 'A.id', '身分證字號', 'not-applicable', 'info', '通知函未記載身分證字號', { a: ev('法院公文', ci.hit.raw, ci.hit.value, ci.prov) }));
   else {
     const r = compareIds(ci.hit.value, li.hit.value);
-    const st = r === 'full' ? 'match' : r === 'partial' ? 'partial' : r === 'mismatch' ? 'mismatch' : 'missing';
+    const checksum = validateTwId(ci.hit.value) && validateTwId(li.hit.value);
+    const st = r === 'full' ? checksum ? 'match' : 'needs-review' : r === 'partial' ? 'partial' : r === 'mismatch' ? 'mismatch' : 'unreadable';
     const reason =
-      r === 'full' ? '全碼一致（檢查碼通過不代表確屬本人）' : r === 'partial' ? `來源${isMasked(ci.hit.value) ? '為遮罩版本' : '不完整'}，僅可見部分一致（部分核對）` : r === 'mismatch' ? '可見位數不一致' : '可見位數不足，無法比對';
-    items.push(item(ctx, 'A.id', '身分證字號', st, 'high', reason, { a: ev('法院公文', maskId(ci.hit.value), maskId(ci.hit.value), ci.prov), b: ev('通知函', maskId(li.hit.value), maskId(li.hit.value), li.prov) }));
+      r === 'full' ? checksum ? '全碼一致（檢查碼通過不代表確屬本人）' : '全碼一致但檢查碼不符，請看原件' : r === 'partial' ? `來源${isMasked(ci.hit.value) ? '為遮罩版本' : '不完整'}，僅可見部分一致（部分核對）` : r === 'mismatch' ? '可見位數不一致' : '可見位數不足，無法比對';
+    items.push(item(ctx, 'A.id', '身分證字號', st, 'high', reason, { a: ev('法院公文', ci.hit.raw, ci.hit.value, ci.prov), b: ev('通知函', li.hit.raw, li.hit.value, li.prov) }));
   }
   // 金額
   const key = (a: LabeledAmount) => ['principal', 'balance', 'total', 'other'].includes(a.kind);

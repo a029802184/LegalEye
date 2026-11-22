@@ -1,9 +1,10 @@
-import type { DocRole, ExtractedDoc, FieldCorrection, FlowId, FlowResult, ManualPair } from '../core/types';
+import type { ChromePageText, DocRole, ExtractedDoc, FieldCorrection, FlowId, FlowResult, ManualPair } from '../core/types';
 import { runFlowA } from './flowA';
 import { runFlowB, type ServiceManualInput } from './flowB';
 import { runFlowC } from './flowC';
 import { runFlowD } from './flowD';
 import type { Settings } from '../core/rules';
+import { addDirectCorrections, applyChromePages } from './chromeText';
 
 export interface FlowDef {
   id: FlowId;
@@ -54,9 +55,17 @@ export interface RunOptions {
   service?: Record<string, ServiceManualInput>;
   manualPairs?: Record<string, ManualPair>;
   corrections?: Record<string, FieldCorrection>;
+  chromePages?: ChromePageText[];
 }
 
 export function runFlow(flow: FlowId, docs: ExtractedDoc[], opt: RunOptions): FlowResult {
+  const base = addDirectCorrections(runChecks(flow, docs, opt), opt);
+  if (!opt.chromePages?.length) return base;
+  const roles = FLOWS.find((entry) => entry.id === flow)!.roles;
+  return applyChromePages(base, docs, roles, opt, (variant, pairs) => runChecks(flow, variant, { ...opt, manualPairs: pairs, corrections: undefined }));
+}
+
+function runChecks(flow: FlowId, docs: ExtractedDoc[], opt: RunOptions): FlowResult {
   const ctx = { settings: opt.settings, service: opt.service, manualPairs: opt.manualPairs, corrections: opt.corrections };
   switch (flow) {
     case 'A':

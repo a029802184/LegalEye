@@ -16,7 +16,7 @@ export interface SourceFile {
   data: Uint8Array;
 }
 
-export type ExtractMethod = 'pdf-text' | 'ocr' | 'docx' | 'xlsx' | 'txt' | 'manual';
+export type ExtractMethod = 'pdf-text' | 'ocr' | 'docx' | 'xlsx' | 'txt' | 'chrome-pasted' | 'manual';
 export interface PageRegion { left: number; top: number; width: number; height: number }
 
 export interface Provenance {
@@ -48,6 +48,7 @@ export function provLabel(p: Provenance | undefined): string {
   if (p.para !== undefined && p.kind === 'docx') parts.push(`第 ${p.para + 1} 段`);
   if (p.sheet) parts.push(`${p.sheet}!${p.cell ?? ''}`);
   if (p.method === 'ocr') parts.push('掃描文字');
+  if (p.method === 'chrome-pasted') parts.push('由使用者從 Chrome PDF 貼入');
   if (p.method === 'manual') parts.push('人工確認');
   return parts.join('・');
 }
@@ -98,6 +99,7 @@ export interface PageText {
   text: string;
   method: ExtractMethod;
   confidence: number;
+  roleHint?: DocRole;
   /** 掃描頁：無文字層 */
   needsOcr?: boolean;
   ocrFailed?: boolean;
@@ -200,17 +202,27 @@ export interface Evidence {
   normalized: string;
   prov?: Provenance;
   correction?: FieldCorrectionTarget;
+  candidates?: { value: string; prov: Provenance }[];
 }
 
 export interface FieldCorrectionTarget {
   key: string;
   field: 'name' | 'id' | 'address' | 'case';
   original: string;
+  originalProv?: Provenance;
   applied?: FieldCorrection;
 }
 
 export interface FieldCorrection { value: string; by: string; at: string }
 export interface ManualPair { person?: string; statement?: string; source?: string }
+
+export interface ChromePageText {
+  unitId: string;
+  fileId: string;
+  page: number;
+  role: DocRole;
+  text: string;
+}
 
 export interface CheckItem {
   id: string;
@@ -251,6 +263,7 @@ export interface CheckUnit {
   pairKey?: string;
   serviceKey?: string;
   match?: MatchInfo;
+  chromeSources?: { fileId: string; page: number; role: DocRole; used: boolean }[];
   /** 該單元使用的文件（角色 → 檔案 id） */
   docs: { role: DocRole; fileId: string; pages?: number[] }[];
   items: CheckItem[];

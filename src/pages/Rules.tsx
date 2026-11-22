@@ -125,12 +125,13 @@ export function RulesPage() {
       </div>
 
       <section className="panel">
-        <div className="panel-head"><h2>報告預設</h2></div>
+        <div className="panel-head"><h2>核對畫面隱私</h2></div>
         <div className="panel-body">
           <label className="check">
             <input type="checkbox" checked={settings.maskByDefault} onChange={(e) => update({ maskByDefault: e.target.checked })} />
-            報告預設遮罩身分證字號、帳號、電話
+            核對畫面遮罩身分證字號、帳號、電話
           </label>
+          <p className="cell-sub">每次開啟核對結果時，下載報告預設遮罩。需要完整版本時可在當次匯出前調整。</p>
         </div>
       </section>
 

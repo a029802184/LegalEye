@@ -55,7 +55,8 @@ function splitSources(docs: ExtractedDoc[], ctx: FlowBContext): CaseGroup[] {
   for (const d of docs) {
     let cur: CaseGroup | undefined;
     for (const p of d.pages) {
-      const role = d.role === 'merged-source' ? pageRole(p.text) : pageRole(p.text) !== 'unknown' ? pageRole(p.text) : d.role;
+      const identifiedRole = pageRole(p.text);
+      const role = p.roleHint ?? (d.role === 'merged-source' || identifiedRole !== 'unknown' ? identifiedRole : d.role);
       const cases = findCaseNumbers(p.text).filter((x) => !x.isDocRef);
       if (new Set(cases.map(caseKey)).size > 1) { cur = undefined; continue; }
       const c = cases[0];
@@ -68,7 +69,7 @@ function splitSources(docs: ExtractedDoc[], ctx: FlowBContext): CaseGroup[] {
           cur = { key: k, caseNo: c, court, pages: [] };
           groups.push(cur);
         }
-      } else if (role === 'service-proof' || role === 'finality-cert' || pageRole(p.text) !== 'unknown') {
+      } else if (role === 'service-proof' || role === 'finality-cert' || identifiedRole !== 'unknown' || p.roleHint) {
         // A new source without an explicit case number cannot inherit the prior case's identity.
         cur = undefined;
       }
@@ -115,7 +116,7 @@ export function runFlowB(docs: ExtractedDoc[], ctx: FlowBContext): FlowResult & 
         id,
         label: petName ?? '此案尚未辨識出債務人',
         subLabel: '聲請狀未辨識到執行名義案號',
-        docs: [{ role: 'enforcement-petition', fileId: pet.file.id }],
+        docs: [{ role: 'enforcement-petition', fileId: pet.file.id, pages: pet.pages.map((p) => p.page) }],
         items: [item(ctx, 'B.case', '執行名義案號', pet.fullText.trim() ? 'unreadable' : 'missing', 'high', '聲請狀案號尚未讀出，請看原件後更正此案案號', { b: evidence })],
         match: { score: 0, evidence: ['無案號可配對'], needsManual: true },
       });
@@ -401,7 +402,10 @@ function compareB(pet: ExtractedDoc, pc: CaseNo, g: CaseGroup, ctx: FlowBContext
   const autoDates = servicePages.map((pg) => serviceDateFromText(pg.text)).filter((d) => d !== null);
   const autoDate = autoDates.length && autoDates.every((d) => sameDay(autoDates[0], d)) ? autoDates[0] : null;
   const method = manual.method ?? autoMethod;
-  const scanService = servicePages.some((p) => p.doc.pages.find((page) => page.page === p.page)?.method === 'ocr');
+  const scanService = servicePages.some((p) => {
+    const method = p.doc.pages.find((page) => page.page === p.page)?.method;
+    return method === 'ocr' || method === 'chrome-pasted';
+  });
   const svcDate = manual.serviceDate ? parseDate(manual.serviceDate) : scanService ? null : autoDate;
   const res = computeInterestStart({
     clause: clause.clause,

@@ -9,15 +9,20 @@ export interface Hit {
   index: number;
 }
 
-const NAME_STOP = /^(應|於|之|所|等|對|自|即|如|已|未|向|給|為|名|姓|住|身|部|間|方|及|與|並|就|均|該|本|共)/;
-const NAME_TRAIL = /(住所?|住址|身分證.*|統一編號.*|地址|電話|應給付.*|應|於|等|即$|因|之|聲請.*|欠款.*|即日.*)$/;
+const NAME_STOP = /^(收取|清償|支付|履行|財產|國民身分證|應|於|之|所|等|對|自|即|如|已|未|向|給|為|名|姓|住|身|部|間|方|及|與|並|就|均|該|本|共)/;
+const NAME_TRAIL = /(住所?|住址|身[分份]證.*|統一編號.*|地址|電話|應給付.*|聲請.*|欠款.*|即日.*)$/;
+const ID_LABEL = String.raw`(?:國\s*民\s*)?身\s*[分份]\s*[證証](?:\s*統\s*一)?(?:\s*[編字]\s*號)?|統\s*一\s*[編字]\s*號`;
+const HOUSEHOLD_FIELD = new RegExp(`${ID_LABEL}|國\\s*民(?=\\s*(?:$|[:：]|\\n))|出\\s*生(?:\\s*日\\s*期)?|性\\s*別|稱\\s*謂|戶\\s*籍|戶\\s*長|(?:父|母)(?:親|姓名)\\s*[:：]|配\\s*偶|電\\s*話|住\\s*址|地\\s*址|姓\\s*名`);
+const NAME_VALUE = /^[\p{Script=Han}]{2,6}(?:[·・][\p{Script=Han}]{1,6})?$/u;
 
 // 姓名後方常見的接續字（遇到即視為姓名結束）
 // 另含戶籍謄本常見的欄位起首字（統一編號、出生、性別、稱謂、戶籍、電話、地址），處理 OCR 無空白的情況
-const AFTER_NAME = new Set('即原更應於住身等因與及並為對向給自已未所之間統出性稱戶電地（(,，、.。；:：0123456789 \n\t'.split(''));
+const AFTER_NAME = new Set('即原更應於住身等因與及並為對向給自已未所之間統出性稱戶電地（(】」,，、.。；:：0123456789 \n\t'.split(''));
 
 /** 從字串開頭切出一個 2–4 字姓名；優先 3 字（最常見），再 2 字、4 字 */
 export function takeName(s: string): string | null {
+  const bounded = stripSpaces(s.split(HOUSEHOLD_FIELD, 1)[0].split(/(?:[\n\r:：,，;；|\d()（）】」]|原名|更名前|間(?=\s*\d{2,4}年)|即(?=\s*[\p{Script=Han}]))/u, 1)[0]);
+  if (bounded.length <= 4 && NAME_VALUE.test(bounded)) return bounded;
   for (const len of [3, 2, 4]) {
     if (s.length < len) continue;
     const cand = s.slice(0, len);
@@ -32,7 +37,7 @@ export function takeName(s: string): string | null {
 export function findDebtorNames(text: string): Hit[] {
   const out: Hit[] = [];
   const t = text.normalize('NFKC');
-  const re = /(?:債務人|相對人)(?:\s*姓名)?\s*[:：]?\s*/g;
+  const re = /(?:債務人|相對人)(?:\s*姓名)?\s*[:：]?\s*[【「]?\s*/g;
   for (const m of t.matchAll(re)) {
     const start = (m.index ?? 0) + m[0].length;
     const rest = t.slice(start, start + 24);
@@ -64,20 +69,19 @@ export function findCreditorNames(text: string): Hit[] {
   return out;
 }
 
-const HOUSEHOLD_FIELD = /國\s*民\s*身\s*分\s*證|身\s*分\s*證|統\s*一\s*(?:編\s*號|字\s*號)|出\s*生|性\s*別|稱\s*謂|戶\s*籍|戶\s*長|父\s*母|配\s*偶|姓\s*名/;
-
 /** 戶籍謄本等有標籤的姓名，只接受姓名欄的字元，不猜取下一欄。 */
 export function labeledNameFields(text: string): { index: number; name?: Hit }[] {
   const out: { index: number; name?: Hit }[] = [];
   const t = text.normalize('NFKC');
-  for (const m of t.matchAll(/姓[ \t]*名[ \t]*[:：]?[ \t]*/g)) {
+  for (const m of t.matchAll(/姓[ \t]*名[ \t]*[:：]?[ \t]*(?:\r?\n[ \t]*)?/g)) {
     const start = (m.index ?? 0) + m[0].length;
     const previous = t.slice(Math.max(0, (m.index ?? 0) - 10), m.index ?? 0);
-    if (/(?:戶\s*長|父|母|配\s*偶|家\s*長)\s*$/.test(previous) && !/稱\s*謂/.test(previous)) continue;
+    if ((/(?:戶\s*長|父(?:\s*親)?|母(?:\s*親)?|配\s*偶|家\s*長)[ \t]*$/.test(previous) && !/稱\s*謂/.test(previous))
+      || /(?:原|曾用|更名前)[ \t]*$/.test(previous)) continue;
     const line = t.slice(start).split(/[\n\r]/, 1)[0];
-    const raw = line.split(HOUSEHOLD_FIELD, 1)[0].split(/[;；,，|]/, 1)[0].trim();
+    const raw = line.split(HOUSEHOLD_FIELD, 1)[0].split(/(?:[;；,，|:：]|[ \t]{2,}(?=\S))/, 1)[0].trim();
     const name = stripSpaces(raw);
-    const valid = /^[\p{Script=Han}]{2,6}(?:[·・][\p{Script=Han}]{1,6})?$/u.test(name);
+    const valid = NAME_VALUE.test(name);
     out.push({ index: start, name: valid ? { value: name, raw, index: start } : undefined });
   }
   return out;
@@ -90,13 +94,18 @@ export function findLabeledNames(text: string): Hit[] {
 export function findIds(text: string): Hit[] {
   const out: Hit[] = [];
   const t = text.normalize('NFKC').toUpperCase();
-  const re = /(?<![A-Z0-9])([A-Z][1289][\d*＊O○●X]{8})(?![A-Z0-9])/g;
-  for (const m of t.matchAll(re)) out.push({ value: m[1], raw: m[0], index: m.index ?? 0 });
+  const re = /(?<![A-Z0-9])([A-Z][ \t]*[1289](?:[ \t]*[\d*O○●X]){8})(?![A-Z0-9])/g;
+  for (const m of t.matchAll(re)) out.push({ value: stripSpaces(m[1]), raw: m[0], index: m.index ?? 0 });
   return out;
 }
 
+export function isLabeledId(text: string, index: number): boolean {
+  return new RegExp(`(?:${ID_LABEL})[ \\t]*[:：]?[ \\t]*(?:\\r?\\n[ \\t]*)?$`).test(text.slice(Math.max(0, index - 48), index));
+}
+
 const ADDRESS_NO = '[0-9〇○零一二兩三四五六七八九十百千]+';
-const ADDR_RE = new RegExp(`(?:戶籍地址|戶籍地|住居所|住所(?:地址)?|住址|地址|住)[ \\t]*[:：]?[ \\t]*((?:\\d{3,6}[ \\t]*)?[一-鿿\\d０-９\\-－之號樓巷弄段鄰里路街村 \\t]{6,66}?${ADDRESS_NO}[ \\t]*號(?:[ \\t]*[之-][ \\t]*${ADDRESS_NO})?(?:[ \\t]*${ADDRESS_NO}[ \\t]*樓(?:[ \\t]*[之-][ \\t]*${ADDRESS_NO})?)?(?:[ \\t]*${ADDRESS_NO}[ \\t]*室)?)`, 'g');
+const ADDRESS_LABEL = /(?:戶[ \t]*籍[ \t]*(?:地[ \t]*址|地)|住[ \t]*居[ \t]*所|住[ \t]*所(?:[ \t]*地[ \t]*址)?|住[ \t]*址|地[ \t]*址|住(?=[ \t]*[:：]))[ \t]*[:：]?[ \t]*/g;
+const ADDR_RE = new RegExp(`^((?:\\d{6}|\\d{5}|\\d{3})?(?:[臺台]灣省|福建省)?[\\p{Script=Han}]{1,3}[市縣][\\p{Script=Han}\\d之\\-]{2,65}?${ADDRESS_NO}(?:[之-]${ADDRESS_NO})?號(?:[之-]${ADDRESS_NO})?(?:(?:地下)?${ADDRESS_NO}樓(?:[之-]${ADDRESS_NO})?)?(?:${ADDRESS_NO}室)?)`, 'u');
 
 const PARTY_LINE = /^[ \t]*(?:[一二三四五六七八九十\d]+[、.)][ \t]*)?(相[ \t]*對[ \t]*人(?:即債務人)?|債[ \t]*務[ \t]*人(?:姓名)?|聲[ \t]*請[ \t]*人(?:即債權人)?|債[ \t]*權[ \t]*人|第[ \t]*三[ \t]*人(?:法定代理人)?|法[ \t]*定[ \t]*代[ \t]*理[ \t]*人|送[ \t]*達[ \t]*代[ \t]*收[ \t]*人|代[ \t]*理[ \t]*人)[ \t]*(?:[:：][ \t]*|(?=[一-鿿]))/gm;
 
@@ -117,10 +126,14 @@ export function debtorFields(text: string): { name?: Hit; id?: Hit; address?: Hi
   if (blocks.length !== 1) return {};
   const block = blocks[0];
   const name = findDebtorNames(`債務人:${block.text}`)[0];
-  const id = findIds(block.text)[0];
-  const address = findAddresses(block.text)[0];
+  const ids = findIds(block.text);
+  const labeled = ids.filter((hit) => isLabeledId(block.text, hit.index));
+  const positions = labeled.length ? labeled : ids;
+  const id = new Set(positions.map((hit) => hit.value)).size === 1 ? positions[0] : undefined;
+  const addresses = findAddresses(block.text);
+  const address = new Set(addresses.map((hit) => stripSpaces(hit.value))).size === 1 ? addresses[0] : undefined;
   return {
-    name: name ? { ...name, index: block.valueAt, raw: block.text.slice(0, name.value.length) } : undefined,
+    name: name ? { ...name, index: block.valueAt + name.index - '債務人:'.length, raw: name.raw.replace(/^債務人[:：][ \t]*[【「]?[ \t]*/, '') } : undefined,
     id: id ? { ...id, index: block.valueAt + id.index } : undefined,
     address: address ? { ...address, index: block.valueAt + address.index } : undefined,
   };
@@ -128,10 +141,28 @@ export function debtorFields(text: string): { name?: Hit; id?: Hit; address?: Hi
 
 export function findAddresses(text: string): Hit[] {
   const out: Hit[] = [];
-  for (const m of text.normalize('NFKC').matchAll(ADDR_RE)) {
-    const v = m[1].trim();
-    if (!/[市縣]/.test(v) || !/號/.test(v)) continue;
-    out.push({ value: v, raw: m[0], index: (m.index ?? 0) + m[0].indexOf(m[1]) });
+  const t = text.normalize('NFKC');
+  for (const label of t.matchAll(ADDRESS_LABEL)) {
+    const start = label.index + label[0].length;
+    const lines = t.slice(start, start + 140).split(/\r?\n/, 3);
+    const first = lines[0].trim() ? 0 : 1;
+    const line = lines[first] ?? '';
+    const continuation = lines[first + 1] ?? '';
+    const wrapped = /(?:[區鄉鎮市里村鄰段巷弄路街]$|^\s*\d{3,6}\s*$)/.test(line.trim())
+      && /^(?!\s*(?:姓名|債務人|戶長|父親|母親|配偶|國民|身分證|記事))[^:：\n]{1,66}號/.test(continuation);
+    const source = wrapped ? `${line}\n${continuation}` : line;
+    const tidy = stripSpaces(source.split(HOUSEHOLD_FIELD, 1)[0]);
+    const match = ADDR_RE.exec(tidy);
+    if (!match) continue;
+    let count = 0;
+    let end = 0;
+    while (end < source.length && count < stripSpaces(match[1]).length) {
+      if (!/\s/.test(source[end])) count++;
+      end++;
+    }
+    const value = source.slice(0, end).trim();
+    const index = start + (first ? lines[0].length + (t[start + lines[0].length] === '\r' ? 2 : 1) : 0) + source.search(/\S/);
+    out.push({ value, raw: t.slice(label.index, index + value.length), index });
   }
   return out;
 }

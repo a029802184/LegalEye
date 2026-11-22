@@ -4,6 +4,7 @@ import { test, expect, type Page } from '@playwright/test';
 import { demoA, demoB, demoC, demoD } from '../tests/fixtures/datasets';
 import { demoPatents, exportPatentXlsx } from '../src/patent/io';
 import { DEFAULT_STATUSES } from '../src/patent/model';
+import { captureDownloads, nextDownload } from './downloads';
 
 async function noHorizontalOverflow(page: Page) {
   const r = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, w: window.innerWidth }));
@@ -13,34 +14,6 @@ async function noHorizontalOverflow(page: Page) {
 async function shot(page: Page, name: string) {
   const vp = page.viewportSize()!;
   await page.screenshot({ path: test.info().outputPath(`${vp.width}x${vp.height}-${name}.png`), fullPage: false });
-}
-
-// Edge 無頭模式中，真實下載會自動開出空白分頁並干擾下一個測試；
-// 因此攔截 app 建立的下載連結，讀取 Blob 內容與檔名來驗證（等同驗證使用者會拿到的檔案）。
-async function captureDownloads(page: Page) {
-  await page.addInitScript(() => {
-    const w = window as unknown as { __dl: { name: string; size: number; text: string }[] };
-    w.__dl = [];
-    const orig = HTMLAnchorElement.prototype.click;
-    HTMLAnchorElement.prototype.click = function (this: HTMLAnchorElement) {
-      if (this.download && this.href.startsWith('blob:')) {
-        const name = this.download;
-        void fetch(this.href)
-          .then((r) => r.blob())
-          .then(async (b) => w.__dl.push({ name, size: b.size, text: /\.(html|csv)$/.test(name) ? await b.text() : '' }));
-        return;
-      }
-      return orig.call(this);
-    };
-  });
-}
-
-async function nextDownload(page: Page, re: RegExp) {
-  const h = await page.waitForFunction(
-    (src) => (window as unknown as { __dl: { name: string }[] }).__dl.find((d) => new RegExp(src).test(d.name)),
-    re.source,
-  );
-  return (await h.jsonValue()) as { name: string; size: number; text: string };
 }
 
 async function nav(page: Page, label: string) {
